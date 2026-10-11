@@ -1,4 +1,4 @@
-package contextmgr
+package react
 
 import (
 	"context"
@@ -45,15 +45,15 @@ func validate(t *testing.T, out []llm.Message) {
 
 func TestWindow(t *testing.T) {
 	msgs := history()
-	all, _ := Window{}.Fit(context.Background(), "", msgs, 100000)
+	all, _ := ContextWindow{}.Fit(context.Background(), "", msgs, 100000)
 	if len(all) != len(msgs) {
 		t.Fatal("dropped messages despite budget")
 	}
 	for _, budget := range []int{50, 250, 450, 600} {
-		out, _ := Window{}.Fit(context.Background(), "", msgs, budget)
+		out, _ := ContextWindow{}.Fit(context.Background(), "", msgs, budget)
 		validate(t, out)
 	}
-	out, _ := Window{}.Fit(context.Background(), "", msgs, 450)
+	out, _ := ContextWindow{}.Fit(context.Background(), "", msgs, 450)
 	if len(out) != 5 {
 		t.Fatalf("expected trim to second turn, got %d msgs", len(out))
 	}
@@ -61,7 +61,7 @@ func TestWindow(t *testing.T) {
 
 func TestSummarize(t *testing.T) {
 	p := mock.New(mock.Text("SUMMARY"))
-	s := &Summarize{Provider: p, Model: "m"}
+	s := &ContextSummarizer{Provider: p, Model: "m"}
 	out, err := s.Fit(context.Background(), "", history(), 500)
 	if err != nil {
 		t.Fatal(err)

@@ -1,14 +1,10 @@
-// Package plugin defines compiled-in agent plugins. A plugin bundles tools,
+// Plugin defines compiled-in agent plugins. A plugin bundles tools,
 // skills, hooks, middleware and system-prompt fragments and registers them
 // with an agent at construction time.
-package plugin
+package react
 
 import (
 	"context"
-
-	"github.com/gosolu/react/hook"
-	"github.com/gosolu/react/skill"
-	"github.com/gosolu/react/tool"
 )
 
 // Plugin extends an agent.
@@ -25,10 +21,10 @@ type Closer interface {
 
 // Registrar is the surface a plugin uses to extend the agent.
 type Registrar interface {
-	AddTool(t tool.Tool) error
-	AddToolMiddleware(m tool.Middleware)
-	AddSkillSource(src skill.Source)
-	AddHooks(h hook.Hooks)
+	AddTool(t Tool) error
+	AddToolMiddleware(m ToolMiddleware)
+	AddSkillSource(src SkillSource)
+	AddHooks(h Hooks)
 	AddSystemPrompt(fragment string)
 	// Config returns plugin configuration supplied via agent.WithPluginConfig.
 	Config(key string) (any, bool)

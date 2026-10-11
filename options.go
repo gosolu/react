@@ -1,16 +1,9 @@
-package agent
+package react
 
 import (
 	"time"
 
-	"github.com/gosolu/react/contextmgr"
-	"github.com/gosolu/react/hook"
 	"github.com/gosolu/react/llm"
-	"github.com/gosolu/react/memory"
-	"github.com/gosolu/react/permission"
-	"github.com/gosolu/react/plugin"
-	"github.com/gosolu/react/skill"
-	"github.com/gosolu/react/tool"
 )
 
 // Option configures an Agent.
@@ -21,17 +14,17 @@ type config struct {
 	provider      llm.Provider
 	model         string
 	system        string
-	tools         []tool.Tool
-	middleware    []tool.Middleware
-	skillSources  []skill.Source
-	plugins       []plugin.Plugin
+	tools         []Tool
+	middleware    []ToolMiddleware
+	skillSources  []SkillSource
+	plugins       []Plugin
 	pluginConfig  map[string]any
-	hooks         hook.Chain
-	store         memory.Store
-	ctxManager    contextmgr.Manager
+	hooks         HookChain
+	store         Store
+	ctxManager    ContextManager
 	contextBudget int
-	policy        permission.Policy
-	approver      permission.Approver
+	policy        PermissionPolicy
+	approver      PermissionApprover
 	maxTurns      int
 	maxParallel   int
 	toolTimeout   time.Duration
@@ -54,10 +47,10 @@ func WithModel(m string) Option { return func(c *config) { c.model = m } }
 func WithSystemPrompt(s string) Option { return func(c *config) { c.system = s } }
 
 // WithTools registers tools.
-func WithTools(ts ...tool.Tool) Option { return func(c *config) { c.tools = append(c.tools, ts...) } }
+func WithTools(ts ...Tool) Option { return func(c *config) { c.tools = append(c.tools, ts...) } }
 
 // WithToolMiddleware wraps every tool call; the first middleware is outermost.
-func WithToolMiddleware(ms ...tool.Middleware) Option {
+func WithToolMiddleware(ms ...ToolMiddleware) Option {
 	return func(c *config) { c.middleware = append(c.middleware, ms...) }
 }
 
@@ -65,13 +58,13 @@ func WithToolMiddleware(ms ...tool.Middleware) Option {
 func WithSkillDirs(dirs ...string) Option {
 	return func(c *config) {
 		for _, d := range dirs {
-			c.skillSources = append(c.skillSources, skill.Dir(d))
+			c.skillSources = append(c.skillSources, SkillDir(d))
 		}
 	}
 }
 
 // WithSkillSources loads skills from arbitrary sources (e.g. embedded FS).
-func WithSkillSources(srcs ...skill.Source) Option {
+func WithSkillSources(srcs ...SkillSource) Option {
 	return func(c *config) { c.skillSources = append(c.skillSources, srcs...) }
 }
 
@@ -79,7 +72,7 @@ func WithSkillSources(srcs ...skill.Source) Option {
 func WithStrictSkills() Option { return func(c *config) { c.strictSkills = true } }
 
 // WithPlugins registers plugins, initialised in order during New.
-func WithPlugins(ps ...plugin.Plugin) Option {
+func WithPlugins(ps ...Plugin) Option {
 	return func(c *config) { c.plugins = append(c.plugins, ps...) }
 }
 
@@ -94,21 +87,30 @@ func WithPluginConfig(key string, v any) Option {
 }
 
 // WithHooks adds lifecycle hooks.
-func WithHooks(hs ...hook.Hooks) Option { return func(c *config) { c.hooks = append(c.hooks, hs...) } }
+func WithHooks(hs ...Hooks) Option { return func(c *config) { c.hooks = append(c.hooks, hs...) } }
 
-// WithMemory sets the session store (default: in-memory).
-func WithMemory(s memory.Store) Option { return func(c *config) { c.store = s } }
+// WithStore sets the session store (default: in-memory).
+func WithStore(s Store) Option { return func(c *config) { c.store = s } }
+
+// WithMemory sets the session store (alias for WithStore).
+func WithMemory(s Store) Option { return func(c *config) { c.store = s } }
 
 // WithContextManager sets the context manager and token budget for history.
-func WithContextManager(m contextmgr.Manager, budget int) Option {
+func WithContextManager(m ContextManager, budget int) Option {
 	return func(c *config) { c.ctxManager, c.contextBudget = m, budget }
 }
 
 // WithPermission sets the tool permission policy and approver (default:
-// permission.Default with no approver, so "ask" decisions are denied).
-func WithPermission(p permission.Policy, a permission.Approver) Option {
+// DefaultPermissionPolicy with no approver, so "ask" decisions are denied).
+func WithPermission(p PermissionPolicy, a PermissionApprover) Option {
 	return func(c *config) { c.policy, c.approver = p, a }
 }
+
+// WithPolicy sets the tool permission policy without changing the approver.
+func WithPolicy(p PermissionPolicy) Option { return func(c *config) { c.policy = p } }
+
+// WithApprover sets the human-in-the-loop approver for "ask" decisions.
+func WithApprover(a PermissionApprover) Option { return func(c *config) { c.approver = a } }
 
 // WithMaxTurns bounds model calls per run (default 20).
 func WithMaxTurns(n int) Option { return func(c *config) { c.maxTurns = n } }

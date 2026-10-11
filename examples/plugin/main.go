@@ -5,13 +5,9 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/gosolu/react/agent"
-	"github.com/gosolu/react/hook"
+	"github.com/gosolu/react"
 	"github.com/gosolu/react/llm"
 	"github.com/gosolu/react/llm/mock"
-	"github.com/gosolu/react/plugin"
-	"github.com/gosolu/react/skill"
-	"github.com/gosolu/react/tool"
 )
 
 // AnalyticsPlugin is an in-process plugin registering tools, hooks, and skill sources.
@@ -19,9 +15,9 @@ type AnalyticsPlugin struct{}
 
 func (p *AnalyticsPlugin) Name() string { return "analytics" }
 
-func (p *AnalyticsPlugin) Init(ctx context.Context, r plugin.Registrar) error {
+func (p *AnalyticsPlugin) Init(ctx context.Context, r react.Registrar) error {
 	// Register custom tool
-	calcTool := tool.New("multiply", "Multiplies two numbers", func(ctx context.Context, in struct{ A, B int }) (int, error) {
+	calcTool := react.NewTool("multiply", "Multiplies two numbers", func(ctx context.Context, in struct{ A, B int }) (int, error) {
 		return in.A * in.B, nil
 	})
 	if err := r.AddTool(calcTool); err != nil {
@@ -29,15 +25,15 @@ func (p *AnalyticsPlugin) Init(ctx context.Context, r plugin.Registrar) error {
 	}
 
 	// Register lifecycle hook
-	r.AddHooks(hook.Hooks{
-		BeforeTool: func(ctx context.Context, rc *hook.RunContext, call *llm.ToolCall) (hook.ToolDecision, error) {
+	r.AddHooks(react.Hooks{
+		BeforeTool: func(ctx context.Context, rc *react.RunContext, call *llm.ToolCall) (react.HookDecision, error) {
 			fmt.Printf("[Plugin Hook] Preparing to run tool: %s\n", call.Name)
-			return hook.ToolDecision{Action: hook.Continue}, nil
+			return react.HookDecision{Action: react.HookContinue}, nil
 		},
 	})
 
 	// Register skill directory
-	r.AddSkillSource(skill.Dir("./examples/plugin/skills"))
+	r.AddSkillSource(react.SkillDir("./examples/plugin/skills"))
 	return nil
 }
 
@@ -47,10 +43,10 @@ func main() {
 		mock.Text("6 * 7 = 42."),
 	)
 
-	a, err := agent.New(
-		agent.WithName("plugin-agent"),
-		agent.WithProvider(p),
-		agent.WithPlugins(&AnalyticsPlugin{}),
+	a, err := react.New(
+		react.WithName("plugin-agent"),
+		react.WithProvider(p),
+		react.WithPlugins(&AnalyticsPlugin{}),
 	)
 	if err != nil {
 		log.Fatal(err)

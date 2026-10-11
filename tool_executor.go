@@ -1,4 +1,4 @@
-package tool
+package react
 
 import (
 	"context"
@@ -11,16 +11,16 @@ import (
 	"github.com/gosolu/react/llm"
 )
 
-// CallResult is the outcome of executing one call.
-type CallResult struct {
+// ToolCallResult is the outcome of executing one call.
+type ToolCallResult struct {
 	Call     llm.ToolCall
-	Result   Result
+	Result   ToolResult
 	Err      error // original error, if any (already reflected in Result)
 	Duration time.Duration
 }
 
-// Executor runs batches of tool calls.
-type Executor struct {
+// ToolExecutor runs batches of tool calls.
+type ToolExecutor struct {
 	// MaxParallel bounds concurrency (<=0 means 4).
 	MaxParallel int
 	// Timeout bounds each call (0 means no per-call timeout).
@@ -31,11 +31,11 @@ type Executor struct {
 //
 // Consecutive non-sequential calls run concurrently; a call whose spec is
 // Sequential (per isSequential) runs alone after preceding calls finish.
-// Handler errors, panics and timeouts are converted into error Results so the
+// ToolHandler errors, panics and timeouts are converted into error Results so the
 // model can react to them. onDone (optional) is invoked once per call as it
 // completes; calls to onDone are serialized.
-func (e Executor) Run(ctx context.Context, calls []llm.ToolCall, isSequential func(name string) bool, h Handler, onDone func(i int, cr CallResult)) []CallResult {
-	results := make([]CallResult, len(calls))
+func (e ToolExecutor) Run(ctx context.Context, calls []llm.ToolCall, isSequential func(name string) bool, h ToolHandler, onDone func(i int, cr ToolCallResult)) []ToolCallResult {
+	results := make([]ToolCallResult, len(calls))
 	maxPar := e.MaxParallel
 	if maxPar <= 0 {
 		maxPar = 4
@@ -72,7 +72,7 @@ func (e Executor) Run(ctx context.Context, calls []llm.ToolCall, isSequential fu
 	return results
 }
 
-func (e Executor) exec(ctx context.Context, call llm.ToolCall, h Handler) (cr CallResult) {
+func (e ToolExecutor) exec(ctx context.Context, call llm.ToolCall, h ToolHandler) (cr ToolCallResult) {
 	start := time.Now()
 	cr.Call = call
 	defer func() {

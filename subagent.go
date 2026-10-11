@@ -1,12 +1,10 @@
-package agent
+package react
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/gosolu/react/tool"
 )
 
 type depthKey struct{}
@@ -31,8 +29,8 @@ type subAgentInput struct {
 // sub-agent's final answer. The sub-agent's events are forwarded to the
 // parent's event stream with Depth incremented, and nesting is bounded by
 // WithMaxDepth.
-func (a *Agent) AsTool(name, description string) tool.Tool {
-	return tool.New(name, description, func(ctx context.Context, in subAgentInput) (string, error) {
+func (a *Agent) AsTool(name, description string) Tool {
+	return NewTool(name, description, func(ctx context.Context, in subAgentInput) (string, error) {
 		if strings.TrimSpace(in.Task) == "" {
 			return "", errors.New("task is required")
 		}

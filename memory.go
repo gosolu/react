@@ -1,10 +1,9 @@
-// Package memory defines conversation session storage.
+// Memory defines conversation session storage.
 //
 // The agent only depends on the Store interface. NewInMemory is the default
 // implementation; integrate external session management (Redis, SQL, a remote
-// service, ...) by implementing Store and passing it to agent.WithMemory.
-// Use memory/storetest to verify custom implementations.
-package memory
+// service, ...) by implementing Store and passing it to WithMemory.
+package react
 
 import (
 	"context"

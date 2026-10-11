@@ -1,4 +1,4 @@
-package agent
+package react
 
 import (
 	"context"
@@ -10,10 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gosolu/react/hook"
 	"github.com/gosolu/react/llm"
-	"github.com/gosolu/react/permission"
-	"github.com/gosolu/react/tool"
 )
 
 type emitFunc func(Event) bool
@@ -28,7 +25,7 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 		return nil, errors.New("agent: empty input")
 	}
 
-	rc := &hook.RunContext{AgentName: a.cfg.name, SessionID: sessionID, RunID: newID(), Depth: depth}
+	rc := &RunContext{AgentName: a.cfg.name, SessionID: sessionID, RunID: newID(), Depth: depth}
 	var emitMu sync.Mutex
 	emit := func(ev Event) bool {
 		if ev.Agent == "" { // events forwarded from sub-agents keep their identity
@@ -46,7 +43,7 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 		return sink(ev)
 	}
 
-	ctx = hook.WithRunContext(ctx, rc)
+	ctx = WithRunContext(ctx, rc)
 	ctx = context.WithValue(ctx, depthKey{}, depth)
 	ctx = context.WithValue(ctx, emitterKey{}, emitFunc(emit))
 	defer func() { a.hooks.RunEnd(ctx, rc, err) }()
@@ -223,26 +220,26 @@ func (a *Agent) callModel(ctx context.Context, req *llm.Request, stream bool, em
 
 // runTools executes a batch of tool calls and returns tool-result messages in
 // call order.
-func (a *Agent) runTools(ctx context.Context, rc *hook.RunContext, calls []llm.ToolCall, emit emitFunc) []llm.Message {
+func (a *Agent) runTools(ctx context.Context, rc *RunContext, calls []llm.ToolCall, emit emitFunc) []llm.Message {
 	mws := a.middleware
 	if a.cfg.toolTimeout > 0 {
 		// Innermost, so approval waits do not count against the tool timeout.
-		mws = append(append([]tool.Middleware(nil), mws...), tool.TimeoutMiddleware(a.cfg.toolTimeout))
+		mws = append(append([]ToolMiddleware(nil), mws...), TimeoutMiddleware(a.cfg.toolTimeout))
 	}
-	exec := tool.Chain(func(ctx context.Context, call llm.ToolCall) (tool.Result, error) {
+	exec := ChainToolMiddleware(func(ctx context.Context, call llm.ToolCall) (ToolResult, error) {
 		t, _ := a.registry.Get(call.Name)
 		return t.Call(ctx, call.Arguments)
 	}, mws...)
 
-	pipeline := func(ctx context.Context, call llm.ToolCall) (tool.Result, error) {
+	pipeline := func(ctx context.Context, call llm.ToolCall) (ToolResult, error) {
 		return a.handleCall(ctx, rc, call, exec, emit)
 	}
 	isSeq := func(name string) bool {
 		t, ok := a.registry.Get(name)
 		return ok && t.Spec().Annotations.Sequential
 	}
-	ex := tool.Executor{MaxParallel: a.cfg.maxParallel}
-	results := ex.Run(ctx, calls, isSeq, pipeline, func(i int, cr tool.CallResult) {
+	ex := ToolExecutor{MaxParallel: a.cfg.maxParallel}
+	results := ex.Run(ctx, calls, isSeq, pipeline, func(i int, cr ToolCallResult) {
 		call, res := cr.Call, cr.Result
 		emit(Event{Type: EventToolResult, ToolCall: &call, ToolIndex: i, ToolResult: &res})
 	})
@@ -260,46 +257,46 @@ func (a *Agent) runTools(ctx context.Context, rc *hook.RunContext, calls []llm.T
 
 // handleCall applies validation, permission policy, hooks and middleware to a
 // single call.
-func (a *Agent) handleCall(ctx context.Context, rc *hook.RunContext, call llm.ToolCall, exec tool.Handler, emit emitFunc) (tool.Result, error) {
+func (a *Agent) handleCall(ctx context.Context, rc *RunContext, call llm.ToolCall, exec ToolHandler, emit emitFunc) (ToolResult, error) {
 	t, ok := a.registry.Get(call.Name)
 	if !ok {
 		var names []string
 		for _, s := range a.registry.Specs() {
 			names = append(names, s.Name)
 		}
-		return tool.ErrorResult(fmt.Sprintf("Error: unknown tool %q. Available tools: %s", call.Name, strings.Join(names, ", "))), nil
+		return ErrorResult(fmt.Sprintf("Error: unknown tool %q. Available tools: %s", call.Name, strings.Join(names, ", "))), nil
 	}
 	if !json.Valid(call.Arguments) {
-		return tool.ErrorResult(fmt.Sprintf("Error: arguments for %s are not valid JSON: %s", call.Name, call.Arguments)), nil
+		return ErrorResult(fmt.Sprintf("Error: arguments for %s are not valid JSON: %s", call.Name, call.Arguments)), nil
 	}
 	spec := t.Spec()
 
 	switch a.cfg.policy.Check(ctx, spec, call) {
-	case permission.Deny:
-		return tool.ErrorResult("Error: this tool call was denied by policy."), nil
-	case permission.Ask:
+	case PolicyDeny:
+		return ErrorResult("Error: this tool call was denied by policy."), nil
+	case PolicyAsk:
 		approved, err := a.askApproval(ctx, spec, call, emit)
 		if err != nil {
-			return tool.Result{}, fmt.Errorf("approval failed: %w", err)
+			return ToolResult{}, fmt.Errorf("approval failed: %w", err)
 		}
 		if !approved {
-			return tool.ErrorResult("Error: the user denied this tool call."), nil
+			return ErrorResult("Error: the user denied this tool call."), nil
 		}
 	}
 
 	d, err := a.hooks.BeforeTool(ctx, rc, &call)
 	if err != nil {
-		return tool.Result{}, err
+		return ToolResult{}, err
 	}
-	var res tool.Result
+	var res ToolResult
 	switch d.Action {
-	case hook.Deny:
+	case HookDeny:
 		reason := d.Reason
 		if reason == "" {
 			reason = "blocked by hook"
 		}
-		return tool.ErrorResult("Error: tool call blocked: " + reason), nil
-	case hook.Override:
+		return ErrorResult("Error: tool call blocked: " + reason), nil
+	case HookOverride:
 		res = d.Result
 	default:
 		res, err = exec(ctx, call)
@@ -313,8 +310,8 @@ func (a *Agent) handleCall(ctx context.Context, rc *hook.RunContext, call llm.To
 	return res, nil
 }
 
-func (a *Agent) askApproval(ctx context.Context, spec tool.Spec, call llm.ToolCall, emit emitFunc) (bool, error) {
-	req := permission.Request{AgentName: a.cfg.name, Spec: spec, Call: call}
+func (a *Agent) askApproval(ctx context.Context, spec ToolSpec, call llm.ToolCall, emit emitFunc) (bool, error) {
+	req := ApprovalRequest{AgentName: a.cfg.name, Spec: spec, Call: call}
 	emit(Event{Type: EventApprovalRequested, ToolCall: &call, Approval: &req})
 	if a.cfg.approver == nil {
 		return false, nil
@@ -327,7 +324,7 @@ func (a *Agent) askApproval(ctx context.Context, spec tool.Spec, call llm.ToolCa
 	return a.cfg.approver.Approve(ctx, req)
 }
 
-func errorResult(err error, partial tool.Result) tool.Result {
+func errorResult(err error, partial ToolResult) ToolResult {
 	msg := err.Error()
 	if errors.Is(err, context.DeadlineExceeded) {
 		msg = "tool call timed out"

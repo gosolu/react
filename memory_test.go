@@ -1,6 +1,4 @@
-// Package storetest provides a conformance suite for memory.Store
-// implementations.
-package storetest
+package react
 
 import (
 	"context"
@@ -9,11 +7,14 @@ import (
 	"testing"
 
 	"github.com/gosolu/react/llm"
-	"github.com/gosolu/react/memory"
 )
 
-// Run exercises a Store implementation. newStore must return a fresh, empty store.
-func Run(t *testing.T, newStore func() memory.Store) {
+func TestInMemory(t *testing.T) {
+	runStoreTest(t, func() Store { return NewInMemory() })
+}
+
+// runStoreTest exercises a Store implementation for conformance.
+func runStoreTest(t *testing.T, newStore func() Store) {
 	ctx := context.Background()
 
 	t.Run("EmptyLoad", func(t *testing.T) {

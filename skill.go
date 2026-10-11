@@ -1,9 +1,9 @@
-// Package skill implements SKILL.md-based skills: folders containing a
+// Skill implements SKILL.md-based skills: folders containing a
 // SKILL.md file (YAML frontmatter + markdown instructions) and optional
 // resources. Only the name/description catalog is advertised to the model up
 // front; the full instructions are loaded on demand via the activate_skill
 // tool (progressive disclosure).
-package skill
+package react
 
 import (
 	"bytes"
@@ -35,7 +35,7 @@ type Skill struct {
 }
 
 // New constructs a skill rooted at dir within fsys, parsing its SKILL.md.
-func New(fsys fs.FS, dir string) (*Skill, error) {
+func NewSkill(fsys fs.FS, dir string) (*Skill, error) {
 	data, err := fs.ReadFile(fsys, path.Join(dir, FileName))
 	if err != nil {
 		return nil, err

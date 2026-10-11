@@ -1,13 +1,10 @@
-// Package hook defines lifecycle hooks and the per-run context shared between
-// the agent, hooks, plugins and tools.
-package hook
+package react
 
 import (
 	"context"
 	"sync"
 
 	"github.com/gosolu/react/llm"
-	"github.com/gosolu/react/tool"
 )
 
 // RunContext describes the current agent run. Fields are set by the agent;
@@ -54,23 +51,23 @@ func RunContextFrom(ctx context.Context) *RunContext {
 	return rc
 }
 
-// Action is what a BeforeTool hook wants to happen.
-type Action int
+// HookAction is what a BeforeTool hook wants to happen.
+type HookAction int
 
 const (
-	// Continue lets the call proceed.
-	Continue Action = iota
-	// Deny blocks the call; Reason is reported to the model as an error.
-	Deny
-	// Override skips execution and uses Result instead.
-	Override
+	// HookContinue lets the call proceed.
+	HookContinue HookAction = iota
+	// HookDeny blocks the call; Reason is reported to the model as an error.
+	HookDeny
+	// HookOverride skips execution and uses Result instead.
+	HookOverride
 )
 
-// ToolDecision is returned by BeforeTool.
-type ToolDecision struct {
-	Action Action
+// HookDecision is returned by BeforeTool.
+type HookDecision struct {
+	Action HookAction
 	Reason string
-	Result tool.Result
+	Result ToolResult
 }
 
 // Hooks is a set of optional lifecycle callbacks. Any field may be nil.
@@ -82,17 +79,16 @@ type Hooks struct {
 	OnRunStart  func(ctx context.Context, rc *RunContext) error
 	BeforeModel func(ctx context.Context, rc *RunContext, req *llm.Request) error
 	AfterModel  func(ctx context.Context, rc *RunContext, resp *llm.Response) error
-	BeforeTool  func(ctx context.Context, rc *RunContext, call *llm.ToolCall) (ToolDecision, error)
-	AfterTool   func(ctx context.Context, rc *RunContext, call llm.ToolCall, res *tool.Result) error
-	// OnEvent receives every agent.Event (typed as any to avoid an import cycle).
-	OnEvent  func(ctx context.Context, ev any)
-	OnRunEnd func(ctx context.Context, rc *RunContext, err error)
+	BeforeTool  func(ctx context.Context, rc *RunContext, call *llm.ToolCall) (HookDecision, error)
+	AfterTool   func(ctx context.Context, rc *RunContext, call llm.ToolCall, res *ToolResult) error
+	OnEvent     func(ctx context.Context, ev Event)
+	OnRunEnd    func(ctx context.Context, rc *RunContext, err error)
 }
 
-// Chain runs multiple Hooks in order.
-type Chain []Hooks
+// HookChain runs multiple Hooks in order.
+type HookChain []Hooks
 
-func (c Chain) RunStart(ctx context.Context, rc *RunContext) error {
+func (c HookChain) RunStart(ctx context.Context, rc *RunContext) error {
 	for _, h := range c {
 		if h.OnRunStart != nil {
 			if err := h.OnRunStart(ctx, rc); err != nil {
@@ -103,7 +99,7 @@ func (c Chain) RunStart(ctx context.Context, rc *RunContext) error {
 	return nil
 }
 
-func (c Chain) BeforeModel(ctx context.Context, rc *RunContext, req *llm.Request) error {
+func (c HookChain) BeforeModel(ctx context.Context, rc *RunContext, req *llm.Request) error {
 	for _, h := range c {
 		if h.BeforeModel != nil {
 			if err := h.BeforeModel(ctx, rc, req); err != nil {
@@ -114,7 +110,7 @@ func (c Chain) BeforeModel(ctx context.Context, rc *RunContext, req *llm.Request
 	return nil
 }
 
-func (c Chain) AfterModel(ctx context.Context, rc *RunContext, resp *llm.Response) error {
+func (c HookChain) AfterModel(ctx context.Context, rc *RunContext, resp *llm.Response) error {
 	for _, h := range c {
 		if h.AfterModel != nil {
 			if err := h.AfterModel(ctx, rc, resp); err != nil {
@@ -125,20 +121,20 @@ func (c Chain) AfterModel(ctx context.Context, rc *RunContext, resp *llm.Respons
 	return nil
 }
 
-// BeforeTool returns the first non-Continue decision.
-func (c Chain) BeforeTool(ctx context.Context, rc *RunContext, call *llm.ToolCall) (ToolDecision, error) {
+// BeforeTool returns the first non-HookContinue decision.
+func (c HookChain) BeforeTool(ctx context.Context, rc *RunContext, call *llm.ToolCall) (HookDecision, error) {
 	for _, h := range c {
 		if h.BeforeTool != nil {
 			d, err := h.BeforeTool(ctx, rc, call)
-			if err != nil || d.Action != Continue {
+			if err != nil || d.Action != HookContinue {
 				return d, err
 			}
 		}
 	}
-	return ToolDecision{}, nil
+	return HookDecision{}, nil
 }
 
-func (c Chain) AfterTool(ctx context.Context, rc *RunContext, call llm.ToolCall, res *tool.Result) error {
+func (c HookChain) AfterTool(ctx context.Context, rc *RunContext, call llm.ToolCall, res *ToolResult) error {
 	for _, h := range c {
 		if h.AfterTool != nil {
 			if err := h.AfterTool(ctx, rc, call, res); err != nil {
@@ -149,7 +145,7 @@ func (c Chain) AfterTool(ctx context.Context, rc *RunContext, call llm.ToolCall,
 	return nil
 }
 
-func (c Chain) Event(ctx context.Context, ev any) {
+func (c HookChain) Event(ctx context.Context, ev Event) {
 	for _, h := range c {
 		if h.OnEvent != nil {
 			h.OnEvent(ctx, ev)
@@ -157,7 +153,7 @@ func (c Chain) Event(ctx context.Context, ev any) {
 	}
 }
 
-func (c Chain) RunEnd(ctx context.Context, rc *RunContext, err error) {
+func (c HookChain) RunEnd(ctx context.Context, rc *RunContext, err error) {
 	for _, h := range c {
 		if h.OnRunEnd != nil {
 			h.OnRunEnd(ctx, rc, err)

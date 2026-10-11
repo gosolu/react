@@ -8,6 +8,7 @@ Features a unified ReAct (Reasoning + Acting) loop with support for both streami
 
 ## Features
 
+- **Unified Top-Level Package:** Core primitives (`Agent`, `Tool`, `Skill`, `Policy`, `Store`, `Hook`, `Event`, `Plugin`, `ContextManager`) are all directly exported by `github.com/gosolu/react`.
 - **Unified ReAct Engine:** A single loop powers both non-streaming (`Run`) and streaming (`Stream`) execution.
 - **Go 1.23+ Iterators:** Streaming exposes range-over-func iterators (`iter.Seq2[Event, error]`) with cancellation on break.
 - **Zero Heavy SDK Dependencies:** Standard library HTTP clients and SSE parsers for OpenAI and Anthropic. Only one external dependency (`gopkg.in/yaml.v3`) for parsing skill frontmatter.
@@ -15,27 +16,27 @@ Features a unified ReAct (Reasoning + Acting) loop with support for both streami
   - `llm/openai`: Works with OpenAI and OpenAI-compatible endpoints (Ollama, vLLM, DeepSeek, LocalAI, etc.).
   - `llm/anthropic`: Anthropic Messages API.
   - `llm/mock`: Scripted provider for deterministic testing and offline development.
-- **Type-safe Tools (`tool`):**
-  - Generics-based tool definitions (`tool.New[In, Out](...)`).
+- **Type-safe Tools:**
+  - Generics-based tool definitions (`react.NewTool[In, Out](...)`).
   - Automatic JSON Schema generation via reflection with support for struct tags (`desc`, `enum`, `omitempty`, `required`).
   - Parallel tool execution with semaphore bounds, per-tool timeouts, and panic recovery.
-- **Progressive Disclosure Skills (`skill`):**
+- **Progressive Disclosure Skills:**
   - `SKILL.md` folders with YAML frontmatter.
   - Only the catalog is advertised up-front; full instructions are lazily loaded on demand via `activate_skill`.
   - Directory-traversal protected `read_skill_file` tool.
-- **In-Process Plugins (`plugin`):**
+- **In-Process Plugins:**
   - Modular plugins can register tools, middleware, skills, hooks, and system prompt fragments.
-- **Lifecycle Hooks (`hook`):**
+- **Lifecycle Hooks:**
   - Granular hooks for `BeforeModel`, `AfterModel`, `BeforeTool`, `AfterTool`, `OnEvent`, and run lifecycle.
-- **Pluggable Session Memory (`memory`):**
+- **Pluggable Session Memory:**
   - Built-in concurrency-safe `InMemory` store.
-  - Open `memory.Store` interface to connect custom backends (Redis, PostgreSQL, etc.). Includes `memory/storetest` conformance test suite.
-- **Context Window Management (`contextmgr`):**
-  - Sliding window (`Window`) that preserves tool-call / tool-result message integrity.
-  - LLM-based summarizer (`Summarize`) with caching.
-- **Permission & Safety (`permission`):**
+  - Open `react.Store` interface to connect custom backends (Redis, PostgreSQL, etc.).
+- **Context Window Management:**
+  - Sliding window (`react.ContextWindow`) that preserves tool-call / tool-result message integrity.
+  - LLM-based summarizer (`react.ContextSummarizer`) with caching.
+- **Permission & Safety:**
   - Rule-based policy (`ReadOnly` auto-allowed, `Destructive` requires approval).
-  - Human-in-the-loop approval interface (`permission.Approver`).
+  - Human-in-the-loop approval interface (`react.PermissionApprover`).
 - **Sub-Agents (`agent.AsTool`):**
   - Expose any agent as a tool to parent agents with depth tracking and forwarded event streams.
 - **CLI REPL (`cmd/react`):**
@@ -47,25 +48,24 @@ Features a unified ReAct (Reasoning + Acting) loop with support for both streami
 
 ```
 react/
-├── agent/            # Core ReAct loop, events, options, sub-agent tool
-├── cmd/react/        # Interactive CLI REPL application
-├── contextmgr/       # Context window sliding window & summarization
+├── agent.go, loop.go, run.go, subagent.go, options.go, event.go  # Core ReAct loop, events, options, sub-agents
+├── tool.go, tool_*.go                                            # Generic tools, JSON schema, executor, middleware
+├── skill.go, skill_*.go                                          # SKILL.md parser, registry, activation tools
+├── hook.go                                                       # RunContext and lifecycle hooks
+├── memory.go                                                     # Session store interface and in-memory implementation
+├── contextmgr.go, contextmgr_summarize.go                        # Context window sliding window & summarization
+├── permission.go                                                 # Permission policies and approver interfaces
+├── plugin.go                                                     # Plugin interface & Registrar
+├── tools/builtin/                                                # Standard tools: read_file, write_file, list_dir, shell
+├── cmd/react/                                                    # Interactive CLI REPL application
 ├── examples/
-│   ├── basic/        # Minimal non-streaming example
-│   ├── plugin/       # In-process plugin & skill folder example
-│   └── streaming/    # Streaming example using iter.Seq2
-├── hook/             # RunContext and lifecycle hooks
-├── llm/              # Core message types, Provider interface, SSE reader, accumulator
-│   ├── anthropic/    # Anthropic Messages API client
-│   ├── mock/         # Scripted mock provider for testing
-│   └── openai/       # OpenAI-compatible API client
-├── memory/           # Session store interface and in-memory implementation
-│   └── storetest/    # Conformance test suite for custom store implementations
-├── permission/       # Permission policies and human approver interfaces
-├── plugin/           # Plugin interface & Registrar
-├── skill/            # SKILL.md parser, registry, and activation tools
-├── tool/             # Generic tools, reflection JSON schema, executor, middleware
-└── tools/builtin/    # Standard tools: read_file, write_file, list_dir, shell
+│   ├── basic/                                                    # Minimal non-streaming example
+│   ├── plugin/                                                   # In-process plugin & skill folder example
+│   └── streaming/                                                # Streaming example using iter.Seq2
+└── llm/                                                          # Provider abstraction and HTTP clients
+    ├── anthropic/                                                # Anthropic Messages API client
+    ├── mock/                                                     # Scripted mock provider for testing
+    └── openai/                                                   # OpenAI-compatible API client
 ```
 
 ---
@@ -93,7 +93,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/gosolu/react/agent"
+	"github.com/gosolu/react"
 	"github.com/gosolu/react/llm/openai"
 	"github.com/gosolu/react/tools/builtin"
 )
@@ -103,10 +103,10 @@ func main() {
 		APIKey: os.Getenv("OPENAI_API_KEY"),
 	})
 
-	a, err := agent.New(
-		agent.WithProvider(provider),
-		agent.WithModel("gpt-4o"),
-		agent.WithTools(builtin.ReadFile(), builtin.ListDir()),
+	a, err := react.New(
+		react.WithProvider(provider),
+		react.WithModel("gpt-4o"),
+		react.WithTools(builtin.ReadFile(), builtin.ListDir()),
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -118,11 +118,11 @@ func main() {
 			log.Fatal(err)
 		}
 		switch ev.Type {
-		case agent.EventTextDelta:
+		case react.EventTextDelta:
 			fmt.Print(ev.Text)
-		case agent.EventToolCallStart:
+		case react.EventToolCallStart:
 			fmt.Printf("\n[Calling tool: %s]\n", ev.ToolCall.Name)
-		case agent.EventToolResult:
+		case react.EventToolResult:
 			fmt.Printf("[Tool result: %s]\n", ev.ToolResult.Text())
 		}
 	}
@@ -141,7 +141,7 @@ type CalculatorInput struct {
 	B         float64 `json:"b" desc:"Second operand"`
 }
 
-calcTool := tool.New("calc", "Performs basic arithmetic", func(ctx context.Context, in CalculatorInput) (float64, error) {
+calcTool := react.NewTool("calc", "Performs basic arithmetic", func(ctx context.Context, in CalculatorInput) (float64, error) {
 	switch in.Operation {
 	case "add":
 		return in.A + in.B, nil
@@ -157,7 +157,7 @@ calcTool := tool.New("calc", "Performs basic arithmetic", func(ctx context.Conte
 	default:
 		return 0, fmt.Errorf("unsupported operation: %s", in.Operation)
 	}
-}, tool.ReadOnly())
+}, react.ReadOnly())
 ```
 
 ### 3. Non-Streaming Execution (`Run`)
@@ -195,9 +195,9 @@ When reviewing code:
 Load skills into the agent:
 
 ```go
-a, err := agent.New(
-    agent.WithProvider(provider),
-    agent.WithSkillDirs("./skills"),
+a, err := react.New(
+    react.WithProvider(provider),
+    react.WithSkillDirs("./skills"),
 )
 ```
 
@@ -207,22 +207,22 @@ The model automatically receives catalog summaries in its system prompt and call
 
 ## Writing an In-Process Plugin
 
-Plugins implement `plugin.Plugin`:
+Plugins implement `react.Plugin`:
 
 ```go
 type MyPlugin struct{}
 
 func (p *MyPlugin) Name() string { return "my_plugin" }
 
-func (p *MyPlugin) Init(ctx context.Context, r plugin.Registrar) error {
+func (p *MyPlugin) Init(ctx context.Context, r react.Registrar) error {
     // Add tools
     r.AddTool(myCustomTool)
 
     // Add lifecycle hooks
-    r.AddHooks(hook.Hooks{
-        BeforeTool: func(ctx context.Context, rc *hook.RunContext, call *llm.ToolCall) (hook.ToolDecision, error) {
+    r.AddHooks(react.Hooks{
+        BeforeTool: func(ctx context.Context, rc *react.RunContext, call *llm.ToolCall) (react.HookDecision, error) {
             log.Printf("Executing tool %s in turn %d", call.Name, rc.Turn)
-            return hook.ToolDecision{Action: hook.Continue}, nil
+            return react.HookDecision{Action: react.HookContinue}, nil
         },
     })
 
@@ -239,16 +239,16 @@ func (p *MyPlugin) Init(ctx context.Context, r plugin.Registrar) error {
 Delegate complex tasks to specialized child agents:
 
 ```go
-researcher, _ := agent.New(
-    agent.WithName("researcher"),
-    agent.WithProvider(provider),
-    agent.WithTools(builtin.ReadFile(), builtin.ListDir()),
+researcher, _ := react.New(
+    react.WithName("researcher"),
+    react.WithProvider(provider),
+    react.WithTools(builtin.ReadFile(), builtin.ListDir()),
 )
 
-mainAgent, _ := agent.New(
-    agent.WithName("main"),
-    agent.WithProvider(provider),
-    agent.WithTools(
+mainAgent, _ := react.New(
+    react.WithName("main"),
+    react.WithProvider(provider),
+    react.WithTools(
         researcher.AsTool("research_codebase", "Delegate codebase research tasks to a specialist agent"),
     ),
 )

@@ -1,6 +1,6 @@
-// Package contextmgr keeps conversation history within a model's context
+// Context management keeps conversation history within a model's context
 // window.
-package contextmgr
+package react
 
 import (
 	"context"
@@ -9,16 +9,16 @@ import (
 	"github.com/gosolu/react/llm"
 )
 
-// Manager trims or compacts messages so that system+messages fit within
+// ContextManager trims or compacts messages so that system+messages fit within
 // budget tokens. A budget <= 0 disables management. Implementations must not
 // split an assistant tool-call message from its tool results and must not
 // mutate the input slice.
-type Manager interface {
+type ContextManager interface {
 	Fit(ctx context.Context, system string, msgs []llm.Message, budget int) ([]llm.Message, error)
 }
 
-// Estimator estimates the token count of a message.
-type Estimator func(llm.Message) int
+// TokenEstimator estimates the token count of a message.
+type TokenEstimator func(llm.Message) int
 
 // EstimateTokens is a cheap heuristic (~4 bytes per token plus overhead).
 func EstimateTokens(m llm.Message) int {
@@ -40,7 +40,7 @@ func EstimateTokens(m llm.Message) int {
 // EstimateText estimates tokens for a plain string.
 func EstimateText(s string) int { return len(s) / 4 }
 
-func estimator(e Estimator) Estimator {
+func estimator(e TokenEstimator) TokenEstimator {
 	if e == nil {
 		return EstimateTokens
 	}
@@ -50,7 +50,7 @@ func estimator(e Estimator) Estimator {
 // unit is a span [start, end) of messages that must be kept or dropped together.
 type unit struct{ start, end, tokens int }
 
-func splitUnits(msgs []llm.Message, est Estimator) []unit {
+func splitUnits(msgs []llm.Message, est TokenEstimator) []unit {
 	var us []unit
 	for i := 0; i < len(msgs); {
 		j := i + 1
@@ -79,19 +79,19 @@ func lastUserUnit(msgs []llm.Message, us []unit) int {
 	return len(us) - 1
 }
 
-// Window drops the oldest messages until the conversation fits. It always
+// ContextWindow drops the oldest messages until the conversation fits. It always
 // keeps the most recent user message and everything after it, and makes the
 // retained history start with a user message.
-type Window struct {
-	Estimator Estimator
+type ContextWindow struct {
+	Estimator TokenEstimator
 }
 
-// Fit implements Manager.
-func (w Window) Fit(_ context.Context, system string, msgs []llm.Message, budget int) ([]llm.Message, error) {
+// Fit implements ContextManager.
+func (w ContextWindow) Fit(_ context.Context, system string, msgs []llm.Message, budget int) ([]llm.Message, error) {
 	return window(system, msgs, budget, estimator(w.Estimator)), nil
 }
 
-func window(system string, msgs []llm.Message, budget int, est Estimator) []llm.Message {
+func window(system string, msgs []llm.Message, budget int, est TokenEstimator) []llm.Message {
 	if budget <= 0 || len(msgs) == 0 {
 		return msgs
 	}

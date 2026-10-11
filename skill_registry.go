@@ -1,4 +1,4 @@
-package skill
+package react
 
 import (
 	"errors"
@@ -11,26 +11,26 @@ import (
 	"sync"
 )
 
-// Source provides skills.
-type Source interface {
+// SkillSource provides skills.
+type SkillSource interface {
 	Skills() ([]*Skill, error)
 }
 
-// SourceFunc adapts a function to Source.
-type SourceFunc func() ([]*Skill, error)
+// SkillSourceFunc adapts a function to SkillSource.
+type SkillSourceFunc func() ([]*Skill, error)
 
-func (f SourceFunc) Skills() ([]*Skill, error) { return f() }
+func (f SkillSourceFunc) Skills() ([]*Skill, error) { return f() }
 
-// FS discovers skills under root within fsys: root itself if it contains a
+// SkillFS discovers skills under root within fsys: root itself if it contains a
 // SKILL.md, otherwise each immediate subdirectory containing one. Use this
 // with //go:embed to ship skills inside plugins.
-func FS(fsys fs.FS, root string) Source {
+func SkillFS(fsys fs.FS, root string) SkillSource {
 	if root == "" {
 		root = "."
 	}
-	return SourceFunc(func() ([]*Skill, error) {
+	return SkillSourceFunc(func() ([]*Skill, error) {
 		if _, err := fs.Stat(fsys, path.Join(root, FileName)); err == nil {
-			s, err := New(fsys, root)
+			s, err := NewSkill(fsys, root)
 			if err != nil {
 				return nil, err
 			}
@@ -50,7 +50,7 @@ func FS(fsys fs.FS, root string) Source {
 			if _, err := fs.Stat(fsys, path.Join(dir, FileName)); err != nil {
 				continue
 			}
-			s, err := New(fsys, dir)
+			s, err := NewSkill(fsys, dir)
 			if err != nil {
 				errs = append(errs, err)
 				continue
@@ -61,29 +61,29 @@ func FS(fsys fs.FS, root string) Source {
 	})
 }
 
-// Dir discovers skills in an OS directory. A missing directory yields no skills.
-func Dir(dir string) Source {
-	return SourceFunc(func() ([]*Skill, error) {
+// SkillDir discovers skills in an OS directory. A missing directory yields no skills.
+func SkillDir(dir string) SkillSource {
+	return SkillSourceFunc(func() ([]*Skill, error) {
 		if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
-		return FS(os.DirFS(dir), ".").Skills()
+		return SkillFS(os.DirFS(dir), ".").Skills()
 	})
 }
 
-// Registry holds loaded skills. It is safe for concurrent use.
-type Registry struct {
+// SkillRegistry holds loaded skills. It is safe for concurrent use.
+type SkillRegistry struct {
 	mu     sync.RWMutex
 	skills map[string]*Skill
 }
 
-// NewRegistry returns an empty registry.
-func NewRegistry() *Registry { return &Registry{skills: map[string]*Skill{}} }
+// NewSkillRegistry returns an empty registry.
+func NewSkillRegistry() *SkillRegistry { return &SkillRegistry{skills: map[string]*Skill{}} }
 
 // Load adds all skills from the sources. Later sources do not override
 // earlier ones; duplicates are reported as errors. Valid skills are added
 // even if some fail to load.
-func (r *Registry) Load(sources ...Source) error {
+func (r *SkillRegistry) Load(sources ...SkillSource) error {
 	var errs []error
 	for _, src := range sources {
 		skills, err := src.Skills()
@@ -100,7 +100,7 @@ func (r *Registry) Load(sources ...Source) error {
 }
 
 // Add registers a single skill.
-func (r *Registry) Add(s *Skill) error {
+func (r *SkillRegistry) Add(s *Skill) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.skills == nil {
@@ -114,7 +114,7 @@ func (r *Registry) Add(s *Skill) error {
 }
 
 // Get returns a skill by name.
-func (r *Registry) Get(name string) (*Skill, bool) {
+func (r *SkillRegistry) Get(name string) (*Skill, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	s, ok := r.skills[name]
@@ -122,7 +122,7 @@ func (r *Registry) Get(name string) (*Skill, bool) {
 }
 
 // List returns skills sorted by name.
-func (r *Registry) List() []*Skill {
+func (r *SkillRegistry) List() []*Skill {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make([]*Skill, 0, len(r.skills))
@@ -134,7 +134,7 @@ func (r *Registry) List() []*Skill {
 }
 
 // Len returns the number of skills.
-func (r *Registry) Len() int {
+func (r *SkillRegistry) Len() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.skills)
@@ -142,7 +142,7 @@ func (r *Registry) Len() int {
 
 // Catalog renders the system-prompt section advertising available skills.
 // It returns "" when there are no skills.
-func (r *Registry) Catalog() string {
+func (r *SkillRegistry) Catalog() string {
 	skills := r.List()
 	if len(skills) == 0 {
 		return ""

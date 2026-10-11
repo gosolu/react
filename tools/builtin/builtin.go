@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gosolu/react/tool"
+	"github.com/gosolu/react"
 )
 
 type readFileInput struct {
@@ -20,10 +20,10 @@ type readFileInput struct {
 }
 
 // ReadFile returns a tool to inspect file contents. Marked ReadOnly.
-func ReadFile(opts ...tool.Option) tool.Tool {
-	defaultOpts := []tool.Option{tool.ReadOnly()}
+func ReadFile(opts ...react.ToolOption) react.Tool {
+	defaultOpts := []react.ToolOption{react.ReadOnly()}
 	defaultOpts = append(defaultOpts, opts...)
-	return tool.New("read_file", "Read the entire contents of a file at the given path.", func(ctx context.Context, in readFileInput) (string, error) {
+	return react.NewTool("read_file", "Read the entire contents of a file at the given path.", func(ctx context.Context, in readFileInput) (string, error) {
 		clean := filepath.Clean(in.Path)
 		data, err := os.ReadFile(clean)
 		if err != nil {
@@ -42,10 +42,10 @@ type writeFileInput struct {
 }
 
 // WriteFile returns a tool to create or overwrite files. Marked Destructive.
-func WriteFile(opts ...tool.Option) tool.Tool {
-	defaultOpts := []tool.Option{tool.Destructive()}
+func WriteFile(opts ...react.ToolOption) react.Tool {
+	defaultOpts := []react.ToolOption{react.Destructive()}
 	defaultOpts = append(defaultOpts, opts...)
-	return tool.New("write_file", "Write text content to a file. Overwrites existing files and creates parent directories if needed.", func(ctx context.Context, in writeFileInput) (string, error) {
+	return react.NewTool("write_file", "Write text content to a file. Overwrites existing files and creates parent directories if needed.", func(ctx context.Context, in writeFileInput) (string, error) {
 		clean := filepath.Clean(in.Path)
 		if err := os.MkdirAll(filepath.Dir(clean), 0755); err != nil {
 			return "", err
@@ -62,10 +62,10 @@ type listDirInput struct {
 }
 
 // ListDir returns a tool to list directory entries. Marked ReadOnly.
-func ListDir(opts ...tool.Option) tool.Tool {
-	defaultOpts := []tool.Option{tool.ReadOnly()}
+func ListDir(opts ...react.ToolOption) react.Tool {
+	defaultOpts := []react.ToolOption{react.ReadOnly()}
 	defaultOpts = append(defaultOpts, opts...)
-	return tool.New("list_dir", "List files and subdirectories in a directory path.", func(ctx context.Context, in listDirInput) (string, error) {
+	return react.NewTool("list_dir", "List files and subdirectories in a directory path.", func(ctx context.Context, in listDirInput) (string, error) {
 		p := in.Path
 		if p == "" {
 			p = "."
@@ -94,10 +94,10 @@ type shellInput struct {
 }
 
 // Shell returns a tool to execute arbitrary bash/sh commands. Marked Destructive and Sequential.
-func Shell(opts ...tool.Option) tool.Tool {
-	defaultOpts := []tool.Option{tool.Destructive(), tool.Sequential()}
+func Shell(opts ...react.ToolOption) react.Tool {
+	defaultOpts := []react.ToolOption{react.Destructive(), react.Sequential()}
 	defaultOpts = append(defaultOpts, opts...)
-	return tool.New("shell", "Execute a command in the system shell. Returns stdout and stderr.", func(ctx context.Context, in shellInput) (string, error) {
+	return react.NewTool("shell", "Execute a command in the system shell. Returns stdout and stderr.", func(ctx context.Context, in shellInput) (string, error) {
 		if strings.TrimSpace(in.Command) == "" {
 			return "", fmt.Errorf("command cannot be empty")
 		}
@@ -144,8 +144,8 @@ func Shell(opts ...tool.Option) tool.Tool {
 }
 
 // All returns a slice of all standard built-in tools.
-func All() []tool.Tool {
-	return []tool.Tool{
+func All() []react.Tool {
+	return []react.Tool{
 		ReadFile(),
 		WriteFile(),
 		ListDir(),

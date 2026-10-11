@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/gosolu/react/agent"
+	"github.com/gosolu/react"
 	"github.com/gosolu/react/llm/mock"
-	"github.com/gosolu/react/tool"
 )
 
 type weatherArgs struct {
@@ -15,7 +14,7 @@ type weatherArgs struct {
 }
 
 func main() {
-	weather := tool.New("get_weather", "Check weather in city", func(ctx context.Context, in weatherArgs) (string, error) {
+	weather := react.NewTool("get_weather", "Check weather in city", func(ctx context.Context, in weatherArgs) (string, error) {
 		return fmt.Sprintf("The weather in %s is 22°C and sunny.", in.City), nil
 	})
 
@@ -25,10 +24,10 @@ func main() {
 	)
 	p.ChunkSize = 2 // stream in small chunks
 
-	a, err := agent.New(
-		agent.WithName("stream-agent"),
-		agent.WithProvider(p),
-		agent.WithTools(weather),
+	a, err := react.New(
+		react.WithName("stream-agent"),
+		react.WithProvider(p),
+		react.WithTools(weather),
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -40,13 +39,13 @@ func main() {
 			log.Fatal(err)
 		}
 		switch ev.Type {
-		case agent.EventTextDelta:
+		case react.EventTextDelta:
 			fmt.Print(ev.Text)
-		case agent.EventToolCallStart:
+		case react.EventToolCallStart:
 			fmt.Printf("\n[Calling tool: %s]\n", ev.ToolCall.Name)
-		case agent.EventToolResult:
+		case react.EventToolResult:
 			fmt.Printf("[Tool result: %s]\n", ev.ToolResult.Text())
-		case agent.EventRunEnd:
+		case react.EventRunEnd:
 			fmt.Println("\n\nFinished in turns:", ev.Result.Turns)
 		}
 	}

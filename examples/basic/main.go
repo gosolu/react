@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/gosolu/react/agent"
+	"github.com/gosolu/react"
 	"github.com/gosolu/react/llm/mock"
-	"github.com/gosolu/react/tool"
 )
 
 type addArgs struct {
@@ -17,7 +16,7 @@ type addArgs struct {
 
 func main() {
 	// Simple typed tool
-	add := tool.New("add", "Add two numbers", func(ctx context.Context, in addArgs) (int, error) {
+	add := react.NewTool("add", "Add two numbers", func(ctx context.Context, in addArgs) (int, error) {
 		return in.A + in.B, nil
 	})
 
@@ -27,10 +26,10 @@ func main() {
 		mock.Text("The sum of 10 and 25 is 35."),
 	)
 
-	a, err := agent.New(
-		agent.WithName("basic-agent"),
-		agent.WithProvider(p),
-		agent.WithTools(add),
+	a, err := react.New(
+		react.WithName("basic-agent"),
+		react.WithProvider(p),
+		react.WithTools(add),
 	)
 	if err != nil {
 		log.Fatal(err)

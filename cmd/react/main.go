@@ -10,12 +10,11 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/gosolu/react/agent"
+	"github.com/gosolu/react"
 	"github.com/gosolu/react/llm"
 	"github.com/gosolu/react/llm/anthropic"
 	"github.com/gosolu/react/llm/mock"
 	"github.com/gosolu/react/llm/openai"
-	"github.com/gosolu/react/permission"
 	"github.com/gosolu/react/tools/builtin"
 )
 
@@ -72,7 +71,7 @@ func main() {
 	reader := bufio.NewReader(os.Stdin)
 
 	// Interactive CLI approval for destructive tools
-	approver := permission.ApproverFunc(func(ctx context.Context, req permission.Request) (bool, error) {
+	approver := react.PermissionApproverFunc(func(ctx context.Context, req react.ApprovalRequest) (bool, error) {
 		fmt.Printf("\n⚠️  [APPROVAL NEEDED] Tool: %s\nArguments: %s\nApprove execution? [y/N]: ", req.Call.Name, string(req.Call.Arguments))
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -82,20 +81,20 @@ func main() {
 		return line == "y" || line == "yes", nil
 	})
 
-	opts := []agent.Option{
-		agent.WithName("react-cli"),
-		agent.WithProvider(p),
-		agent.WithModel(model),
-		agent.WithSystemPrompt(*systemPromptFlag),
-		agent.WithTools(builtin.All()...),
-		agent.WithPermission(permission.Default(), approver),
+	opts := []react.Option{
+		react.WithName("react-cli"),
+		react.WithProvider(p),
+		react.WithModel(model),
+		react.WithSystemPrompt(*systemPromptFlag),
+		react.WithTools(builtin.All()...),
+		react.WithPermission(react.DefaultPermissionPolicy(), approver),
 	}
 
 	if *skillsDirFlag != "" {
-		opts = append(opts, agent.WithSkillDirs(*skillsDirFlag))
+		opts = append(opts, react.WithSkillDirs(*skillsDirFlag))
 	}
 
-	a, err := agent.New(opts...)
+	a, err := react.New(opts...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create agent: %v\n", err)
 		os.Exit(1)
@@ -159,17 +158,17 @@ func main() {
 					break
 				}
 				switch ev.Type {
-				case agent.EventTextDelta:
+				case react.EventTextDelta:
 					fmt.Print(ev.Text)
-				case agent.EventToolCallStart:
+				case react.EventToolCallStart:
 					fmt.Printf("\n⚙️  Calling [%s]...\n", ev.ToolCall.Name)
-				case agent.EventToolResult:
+				case react.EventToolResult:
 					status := "✓"
 					if ev.ToolResult.IsError {
 						status = "✗ (error)"
 					}
 					fmt.Printf("   %s [%s]: %s\n", status, ev.ToolCall.Name, summarize(ev.ToolResult.Text()))
-				case agent.EventRunEnd:
+				case react.EventRunEnd:
 					fmt.Println()
 				}
 			}

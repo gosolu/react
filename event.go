@@ -1,9 +1,7 @@
-package agent
+package react
 
 import (
 	"github.com/gosolu/react/llm"
-	"github.com/gosolu/react/permission"
-	"github.com/gosolu/react/tool"
 )
 
 // EventType identifies an Event.
@@ -37,8 +35,8 @@ type Event struct {
 
 	ToolCall   *llm.ToolCall // ToolCallStart, ToolCallReady, ApprovalRequested, ToolResult
 	ToolIndex  int           // index of the call within the turn
-	ToolResult *tool.Result  // ToolResult
-	Approval   *permission.Request
+	ToolResult *ToolResult      // ToolResult
+	Approval   *ApprovalRequest // ApprovalRequested
 
 	Message *llm.Message // MessageComplete
 	Usage   *llm.Usage   // MessageComplete (per call), RunEnd (aggregate)

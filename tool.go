@@ -1,7 +1,6 @@
-// Package tool defines the Tool abstraction, typed function tools with
-// automatic JSON Schema generation, a registry, middleware, and a parallel
-// executor.
-package tool
+// Tool defines the tool abstraction, typed function tools with automatic JSON
+// Schema generation, a registry, middleware, and a parallel executor.
+package react
 
 import (
 	"context"
@@ -13,25 +12,25 @@ import (
 
 // Tool is something the model can call.
 type Tool interface {
-	Spec() Spec
-	Call(ctx context.Context, args json.RawMessage) (Result, error)
+	Spec() ToolSpec
+	Call(ctx context.Context, args json.RawMessage) (ToolResult, error)
 }
 
 // Spec describes a tool.
-type Spec struct {
+type ToolSpec struct {
 	Name        string
 	Description string
 	InputSchema json.RawMessage
-	Annotations Annotations
+	Annotations ToolAnnotations
 }
 
 // LLM converts the spec into the provider-facing form.
-func (s Spec) LLM() llm.ToolSpec {
+func (s ToolSpec) LLM() llm.ToolSpec {
 	return llm.ToolSpec{Name: s.Name, Description: s.Description, InputSchema: s.InputSchema}
 }
 
-// Annotations are hints used by the agent's permission policy and executor.
-type Annotations struct {
+// ToolAnnotations are hints used by the agent's permission policy and executor.
+type ToolAnnotations struct {
 	// ReadOnly tools have no side effects and may be auto-approved.
 	ReadOnly bool
 	// Destructive tools modify state and require approval under the default policy.
@@ -41,7 +40,7 @@ type Annotations struct {
 }
 
 // Result is the outcome of a tool call.
-type Result struct {
+type ToolResult struct {
 	Content []llm.Part
 	IsError bool
 	// Meta carries data for hooks/observers; it is never sent to the model.
@@ -49,7 +48,7 @@ type Result struct {
 }
 
 // Text concatenates the text parts of the result.
-func (r Result) Text() string {
+func (r ToolResult) Text() string {
 	var b strings.Builder
 	for _, p := range r.Content {
 		if p.Type == llm.PartText {
@@ -60,27 +59,27 @@ func (r Result) Text() string {
 }
 
 // TextResult returns a successful text result.
-func TextResult(s string) Result { return Result{Content: []llm.Part{llm.TextPart(s)}} }
+func TextResult(s string) ToolResult { return ToolResult{Content: []llm.Part{llm.TextPart(s)}} }
 
 // ErrorResult returns a failed text result.
-func ErrorResult(s string) Result {
-	return Result{Content: []llm.Part{llm.TextPart(s)}, IsError: true}
+func ErrorResult(s string) ToolResult {
+	return ToolResult{Content: []llm.Part{llm.TextPart(s)}, IsError: true}
 }
 
 // funcTool is a Tool backed by a raw function.
 type funcTool struct {
-	spec Spec
-	fn   func(context.Context, json.RawMessage) (Result, error)
+	spec ToolSpec
+	fn   func(context.Context, json.RawMessage) (ToolResult, error)
 }
 
-func (t *funcTool) Spec() Spec { return t.spec }
-func (t *funcTool) Call(ctx context.Context, args json.RawMessage) (Result, error) {
+func (t *funcTool) Spec() ToolSpec { return t.spec }
+func (t *funcTool) Call(ctx context.Context, args json.RawMessage) (ToolResult, error) {
 	return t.fn(ctx, args)
 }
 
 // NewRaw builds a tool from an explicit spec and a raw-JSON handler. If
 // spec.InputSchema is empty, an empty object schema is used.
-func NewRaw(spec Spec, fn func(ctx context.Context, args json.RawMessage) (Result, error)) Tool {
+func NewRawTool(spec ToolSpec, fn func(ctx context.Context, args json.RawMessage) (ToolResult, error)) Tool {
 	if len(spec.InputSchema) == 0 {
 		spec.InputSchema = json.RawMessage(`{"type":"object","properties":{}}`)
 	}

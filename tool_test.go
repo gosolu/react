@@ -1,4 +1,4 @@
-package tool
+package react
 
 import (
 	"context"
@@ -67,7 +67,7 @@ func TestSchema(t *testing.T) {
 type addIn struct{ A, B int }
 
 func TestTypedTool(t *testing.T) {
-	add := New("add", "add", func(_ context.Context, in addIn) (int, error) { return in.A + in.B, nil })
+	add := NewTool("add", "add", func(_ context.Context, in addIn) (int, error) { return in.A + in.B, nil })
 	r, err := add.Call(context.Background(), json.RawMessage(`{"A":2,"B":3}`))
 	if err != nil || r.Text() != "5" {
 		t.Fatalf("%v %v", r, err)
@@ -79,22 +79,22 @@ func TestTypedTool(t *testing.T) {
 }
 
 func TestRegistry(t *testing.T) {
-	r := NewRegistry()
-	tl := NewRaw(Spec{Name: "a"}, nil)
+	r := NewToolRegistry()
+	tl := NewRawTool(ToolSpec{Name: "a"}, nil)
 	if err := r.Register(tl); err != nil {
 		t.Fatal(err)
 	}
 	if r.Register(tl) == nil {
 		t.Fatal("dup allowed")
 	}
-	if r.Register(NewRaw(Spec{Name: "bad name"}, nil)) == nil {
+	if r.Register(NewRawTool(ToolSpec{Name: "bad name"}, nil)) == nil {
 		t.Fatal("bad name allowed")
 	}
 }
 
 func TestExecutorParallelOrderAndErrors(t *testing.T) {
 	var running, peak atomic.Int32
-	h := func(ctx context.Context, c llm.ToolCall) (Result, error) {
+	h := func(ctx context.Context, c llm.ToolCall) (ToolResult, error) {
 		n := running.Add(1)
 		defer running.Add(-1)
 		for {
@@ -107,12 +107,12 @@ func TestExecutorParallelOrderAndErrors(t *testing.T) {
 		case "panic":
 			panic("boom")
 		case "fail":
-			return Result{}, errors.New("nope")
+			return ToolResult{}, errors.New("nope")
 		case "slow":
 			select {
 			case <-time.After(time.Second):
 			case <-ctx.Done():
-				return Result{}, ctx.Err()
+				return ToolResult{}, ctx.Err()
 			}
 		case "seq":
 			if running.Load() != 1 {
@@ -123,10 +123,10 @@ func TestExecutorParallelOrderAndErrors(t *testing.T) {
 		return TextResult(c.ID), nil
 	}
 	calls := []llm.ToolCall{{ID: "1", Name: "ok"}, {ID: "2", Name: "ok"}, {ID: "3", Name: "panic"}, {ID: "4", Name: "fail"}, {ID: "5", Name: "seq"}, {ID: "6", Name: "slow"}}
-	ex := Executor{MaxParallel: 4, Timeout: 200 * time.Millisecond}
+	ex := ToolExecutor{MaxParallel: 4, Timeout: 200 * time.Millisecond}
 	var done atomic.Int32
 	start := time.Now()
-	res := ex.Run(context.Background(), calls, func(n string) bool { return n == "seq" }, h, func(int, CallResult) { done.Add(1) })
+	res := ex.Run(context.Background(), calls, func(n string) bool { return n == "seq" }, h, func(int, ToolCallResult) { done.Add(1) })
 	if time.Since(start) > 600*time.Millisecond {
 		t.Fatalf("too slow: %v", time.Since(start))
 	}

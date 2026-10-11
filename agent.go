@@ -1,7 +1,9 @@
-// Package agent implements the agent core: a ReAct loop that alternates
-// between model calls and tool execution, with streaming and non-streaming
-// modes sharing a single implementation.
-package agent
+// Package react implements a modular, minimal-dependency AI agent core in Go:
+// a unified ReAct (Reasoning + Acting) loop with support for streaming and
+// non-streaming modes, typed tools with JSON Schema generation, progressive
+// disclosure skills, in-process plugins, lifecycle hooks, session memory,
+// permission policies, and sub-agents.
+package react
 
 import (
 	"context"
@@ -11,14 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/gosolu/react/contextmgr"
-	"github.com/gosolu/react/hook"
-	"github.com/gosolu/react/memory"
-	"github.com/gosolu/react/permission"
-	"github.com/gosolu/react/plugin"
-	"github.com/gosolu/react/skill"
-	"github.com/gosolu/react/tool"
 )
 
 // Errors returned by the agent.
@@ -32,12 +26,12 @@ var (
 // Agent is an immutable, concurrency-safe agent. Create with New.
 type Agent struct {
 	cfg        config
-	registry   *tool.Registry
-	skills     *skill.Registry
+	registry   *ToolRegistry
+	skills     *SkillRegistry
 	system     string
-	middleware []tool.Middleware
-	hooks      hook.Chain
-	plugins    []plugin.Plugin
+	middleware []ToolMiddleware
+	hooks      HookChain
+	plugins    []Plugin
 
 	approvalMu sync.Mutex
 	closeOnce  sync.Once
@@ -59,21 +53,21 @@ func New(opts ...Option) (*Agent, error) {
 		return nil, ErrNoProvider
 	}
 	if cfg.store == nil {
-		cfg.store = memory.NewInMemory()
+		cfg.store = NewInMemory()
 	}
 	if cfg.ctxManager == nil {
-		cfg.ctxManager = contextmgr.Window{}
+		cfg.ctxManager = ContextWindow{}
 	}
 	if cfg.policy == nil {
-		cfg.policy = permission.Default()
+		cfg.policy = DefaultPermissionPolicy()
 	}
 
 	a := &Agent{
 		cfg:        cfg,
-		registry:   tool.NewRegistry(),
-		skills:     skill.NewRegistry(),
-		middleware: append([]tool.Middleware(nil), cfg.middleware...),
-		hooks:      append(hook.Chain(nil), cfg.hooks...),
+		registry:   NewToolRegistry(),
+		skills:     NewSkillRegistry(),
+		middleware: append([]ToolMiddleware(nil), cfg.middleware...),
+		hooks:      append(HookChain(nil), cfg.hooks...),
 	}
 	for _, t := range cfg.tools {
 		if err := a.registry.Register(t); err != nil {
@@ -81,7 +75,7 @@ func New(opts ...Option) (*Agent, error) {
 		}
 	}
 
-	reg := &registrar{a: a, skillSources: append([]skill.Source(nil), cfg.skillSources...)}
+	reg := &registrar{a: a, skillSources: append([]SkillSource(nil), cfg.skillSources...)}
 	for _, p := range cfg.plugins {
 		reg.current = p.Name()
 		if err := p.Init(context.Background(), reg); err != nil {
@@ -123,20 +117,23 @@ func (a *Agent) Name() string { return a.cfg.name }
 func (a *Agent) SystemPrompt() string { return a.system }
 
 // Tools returns the specs of all registered tools.
-func (a *Agent) Tools() []tool.Spec { return a.registry.Specs() }
+func (a *Agent) Tools() []ToolSpec { return a.registry.Specs() }
 
 // Skills returns all loaded skills.
-func (a *Agent) Skills() []*skill.Skill { return a.skills.List() }
+func (a *Agent) Skills() []*Skill { return a.skills.List() }
 
 // Memory returns the session store.
-func (a *Agent) Memory() memory.Store { return a.cfg.store }
+func (a *Agent) Memory() Store { return a.cfg.store }
+
+// Store returns the session store (alias for Memory).
+func (a *Agent) Store() Store { return a.cfg.store }
 
 // Close releases plugin resources (in reverse order). It is idempotent.
 func (a *Agent) Close() error {
 	var errs []error
 	a.closeOnce.Do(func() {
 		for _, v := range slices.Backward(a.plugins) {
-			if c, ok := v.(plugin.Closer); ok {
+			if c, ok := v.(Closer); ok {
 				if err := c.Close(); err != nil {
 					errs = append(errs, fmt.Errorf("plugin %q: %w", v.Name(), err))
 				}
@@ -146,25 +143,25 @@ func (a *Agent) Close() error {
 	return errors.Join(errs...)
 }
 
-// registrar implements plugin.Registrar during New.
+// registrar implements Registrar during New.
 type registrar struct {
 	a            *Agent
 	current      string
 	prompts      []string
-	skillSources []skill.Source
+	skillSources []SkillSource
 }
 
-func (r *registrar) AddTool(t tool.Tool) error {
+func (r *registrar) AddTool(t Tool) error {
 	if err := r.a.registry.Register(t); err != nil {
 		return fmt.Errorf("plugin %q: %w", r.current, err)
 	}
 	return nil
 }
 
-func (r *registrar) AddToolMiddleware(m tool.Middleware) { r.a.middleware = append(r.a.middleware, m) }
+func (r *registrar) AddToolMiddleware(m ToolMiddleware) { r.a.middleware = append(r.a.middleware, m) }
 
-func (r *registrar) AddSkillSource(src skill.Source) { r.skillSources = append(r.skillSources, src) }
-func (r *registrar) AddHooks(h hook.Hooks)           { r.a.hooks = append(r.a.hooks, h) }
+func (r *registrar) AddSkillSource(src SkillSource) { r.skillSources = append(r.skillSources, src) }
+func (r *registrar) AddHooks(h Hooks)           { r.a.hooks = append(r.a.hooks, h) }
 func (r *registrar) AddSystemPrompt(s string) {
 	if s = strings.TrimSpace(s); s != "" {
 		r.prompts = append(r.prompts, s)

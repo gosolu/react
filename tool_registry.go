@@ -1,4 +1,4 @@
-package tool
+package react
 
 import (
 	"fmt"
@@ -10,15 +10,15 @@ var validName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 // Registry holds tools by name, preserving registration order.
 // It is safe for concurrent use.
-type Registry struct {
+type ToolRegistry struct {
 	mu    sync.RWMutex
 	tools map[string]Tool
 	order []string
 }
 
 // NewRegistry creates a registry, panicking on invalid or duplicate tools.
-func NewRegistry(tools ...Tool) *Registry {
-	r := &Registry{tools: map[string]Tool{}}
+func NewToolRegistry(tools ...Tool) *ToolRegistry {
+	r := &ToolRegistry{tools: map[string]Tool{}}
 	for _, t := range tools {
 		if err := r.Register(t); err != nil {
 			panic(err)
@@ -28,7 +28,7 @@ func NewRegistry(tools ...Tool) *Registry {
 }
 
 // Register adds a tool. Names must be unique and match [a-zA-Z0-9_-]{1,64}.
-func (r *Registry) Register(t Tool) error {
+func (r *ToolRegistry) Register(t Tool) error {
 	name := t.Spec().Name
 	if !validName.MatchString(name) {
 		return fmt.Errorf("tool: invalid name %q", name)
@@ -47,7 +47,7 @@ func (r *Registry) Register(t Tool) error {
 }
 
 // Get looks up a tool by name.
-func (r *Registry) Get(name string) (Tool, bool) {
+func (r *ToolRegistry) Get(name string) (Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	t, ok := r.tools[name]
@@ -55,7 +55,7 @@ func (r *Registry) Get(name string) (Tool, bool) {
 }
 
 // List returns tools in registration order.
-func (r *Registry) List() []Tool {
+func (r *ToolRegistry) List() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make([]Tool, 0, len(r.order))
@@ -66,9 +66,9 @@ func (r *Registry) List() []Tool {
 }
 
 // Specs returns tool specs in registration order.
-func (r *Registry) Specs() []Spec {
+func (r *ToolRegistry) Specs() []ToolSpec {
 	ts := r.List()
-	out := make([]Spec, len(ts))
+	out := make([]ToolSpec, len(ts))
 	for i, t := range ts {
 		out[i] = t.Spec()
 	}
@@ -76,7 +76,7 @@ func (r *Registry) Specs() []Spec {
 }
 
 // Len returns the number of tools.
-func (r *Registry) Len() int {
+func (r *ToolRegistry) Len() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.order)

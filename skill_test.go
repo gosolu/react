@@ -1,4 +1,4 @@
-package skill
+package react
 
 import (
 	"context"
@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
-
-	"github.com/gosolu/react/hook"
 )
 
 var testFS = fstest.MapFS{
@@ -27,8 +25,8 @@ func TestParse(t *testing.T) {
 }
 
 func TestRegistryAndTools(t *testing.T) {
-	r := NewRegistry()
-	err := r.Load(FS(testFS, "skills"))
+	r := NewSkillRegistry()
+	err := r.Load(SkillFS(testFS, "skills"))
 	if err == nil {
 		t.Fatal("expected error for bad skill")
 	}
@@ -45,8 +43,8 @@ func TestRegistryAndTools(t *testing.T) {
 
 	tools := r.Tools()
 	activate, readFile := tools[0], tools[1]
-	rc := &hook.RunContext{}
-	ctx := hook.WithRunContext(context.Background(), rc)
+	rc := &RunContext{}
+	ctx := WithRunContext(context.Background(), rc)
 
 	res, err := activate.Call(ctx, json.RawMessage(`{"name":"pdf-tools"}`))
 	if err != nil || res.IsError || !strings.Contains(res.Text(), "Use pdftotext.") || !strings.Contains(res.Text(), "scripts/run.sh") || !strings.Contains(res.Text(), "shell") {

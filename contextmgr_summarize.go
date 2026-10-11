@@ -1,4 +1,4 @@
-package contextmgr
+package react
 
 import (
 	"context"
@@ -18,25 +18,25 @@ user goals and constraints, decisions made, important facts and values,
 tool calls performed and their key results, and any unfinished work.
 Output only the summary.`
 
-// Summarize replaces older history with an LLM-written summary when the
+// ContextSummarizer replaces older history with an LLM-written summary when the
 // conversation exceeds the budget. Recent history (up to RecentRatio of the
 // budget, always including the latest user message) is kept verbatim.
 // Summaries are cached by content hash so repeated calls with the same prefix
 // do not re-invoke the model.
-type Summarize struct {
+type ContextSummarizer struct {
 	Provider    llm.Provider
 	Model       string
-	Prompt      string    // defaults to DefaultSummaryPrompt
-	RecentRatio float64   // fraction of budget reserved for recent messages (default 0.5)
-	MaxTokens   int       // summary length limit (default 1024)
-	Estimator   Estimator // defaults to EstimateTokens
+	Prompt      string         // defaults to DefaultSummaryPrompt
+	RecentRatio float64        // fraction of budget reserved for recent messages (default 0.5)
+	MaxTokens   int            // summary length limit (default 1024)
+	Estimator   TokenEstimator // defaults to EstimateTokens
 
 	mu    sync.Mutex
 	cache map[string]string
 }
 
-// Fit implements Manager.
-func (s *Summarize) Fit(ctx context.Context, system string, msgs []llm.Message, budget int) ([]llm.Message, error) {
+// Fit implements ContextManager.
+func (s *ContextSummarizer) Fit(ctx context.Context, system string, msgs []llm.Message, budget int) ([]llm.Message, error) {
 	est := estimator(s.Estimator)
 	if budget <= 0 || len(msgs) == 0 {
 		return msgs, nil
@@ -89,7 +89,7 @@ func (s *Summarize) Fit(ctx context.Context, system string, msgs []llm.Message, 
 	return window(system, out, budget, est), nil
 }
 
-func (s *Summarize) summarize(ctx context.Context, msgs []llm.Message) (string, error) {
+func (s *ContextSummarizer) summarize(ctx context.Context, msgs []llm.Message) (string, error) {
 	transcript := Render(msgs, 2000)
 	sum := sha256.Sum256([]byte(transcript))
 	key := hex.EncodeToString(sum[:])

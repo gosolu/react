@@ -1,4 +1,4 @@
-package agent_test
+package react
 
 import (
 	"context"
@@ -7,12 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gosolu/react/agent"
-	"github.com/gosolu/react/hook"
 	"github.com/gosolu/react/llm"
 	"github.com/gosolu/react/llm/mock"
-	"github.com/gosolu/react/permission"
-	"github.com/gosolu/react/tool"
 )
 
 type calcArgs struct {
@@ -20,13 +16,13 @@ type calcArgs struct {
 	B int `json:"b"`
 }
 
-func setupTestTools() (tool.Tool, tool.Tool) {
-	add := tool.New("add", "adds two numbers", func(ctx context.Context, in calcArgs) (int, error) {
+func setupTestTools() (Tool, Tool) {
+	add := NewTool("add", "adds two numbers", func(ctx context.Context, in calcArgs) (int, error) {
 		return in.A + in.B, nil
 	})
-	dangerous := tool.New("destroy", "destructive tool", func(ctx context.Context, in struct{}) (string, error) {
+	dangerous := NewTool("destroy", "destructive tool", func(ctx context.Context, in struct{}) (string, error) {
 		return "destroyed", nil
-	}, tool.Destructive())
+	}, Destructive())
 	return add, dangerous
 }
 
@@ -44,12 +40,12 @@ func TestAgentStreamAndRunParity(t *testing.T) {
 
 	// 1. Test Run (non-stream)
 	p1 := makeProvider()
-	a1, err := agent.New(
-		agent.WithProvider(p1),
-		agent.WithTools(add),
+	a1, err := New(
+		WithProvider(p1),
+		WithTools(add),
 	)
 	if err != nil {
-		t.Fatalf("agent.New failed: %v", err)
+		t.Fatalf("New failed: %v", err)
 	}
 
 	resRun, err := a1.Run(ctx, "session-1", "calculate 2+3")
@@ -65,24 +61,24 @@ func TestAgentStreamAndRunParity(t *testing.T) {
 
 	// 2. Test Stream
 	p2 := makeProvider()
-	a2, err := agent.New(
-		agent.WithProvider(p2),
-		agent.WithTools(add),
+	a2, err := New(
+		WithProvider(p2),
+		WithTools(add),
 	)
 	if err != nil {
-		t.Fatalf("agent.New failed: %v", err)
+		t.Fatalf("New failed: %v", err)
 	}
 
-	var streamResult *agent.Result
+	var streamResult *Result
 	var textDeltas []string
 	for ev, err := range a2.Stream(ctx, "session-2", "calculate 2+3") {
 		if err != nil {
 			t.Fatalf("Stream error: %v", err)
 		}
-		if ev.Type == agent.EventTextDelta {
+		if ev.Type == EventTextDelta {
 			textDeltas = append(textDeltas, ev.Text)
 		}
-		if ev.Type == agent.EventRunEnd {
+		if ev.Type == EventRunEnd {
 			streamResult = ev.Result
 		}
 	}
@@ -114,21 +110,21 @@ func TestAgentMaxTurns(t *testing.T) {
 		}, nil
 	})
 
-	loopTool := tool.New("loop", "loop", func(ctx context.Context, in struct{}) (string, error) {
+	loopTool := NewTool("loop", "loop", func(ctx context.Context, in struct{}) (string, error) {
 		return "ok", nil
 	})
 
-	a, err := agent.New(
-		agent.WithProvider(p),
-		agent.WithTools(loopTool),
-		agent.WithMaxTurns(3),
+	a, err := New(
+		WithProvider(p),
+		WithTools(loopTool),
+		WithMaxTurns(3),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	res, err := a.Run(context.Background(), "s1", "start")
-	if err != agent.ErrMaxTurns {
+	if err != ErrMaxTurns {
 		t.Fatalf("expected ErrMaxTurns, got %v", err)
 	}
 	if res.Turns != 3 {
@@ -144,14 +140,14 @@ func TestAgentPermissions(t *testing.T) {
 	)
 
 	var approved atomic.Bool
-	approver := permission.ApproverFunc(func(ctx context.Context, req permission.Request) (bool, error) {
+	approver := PermissionApproverFunc(func(ctx context.Context, req ApprovalRequest) (bool, error) {
 		return approved.Load(), nil
 	})
 
-	a, err := agent.New(
-		agent.WithProvider(p),
-		agent.WithTools(dangerous),
-		agent.WithPermission(permission.Default(), approver),
+	a, err := New(
+		WithProvider(p),
+		WithTools(dangerous),
+		WithPermission(DefaultPermissionPolicy(), approver),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -175,10 +171,10 @@ func TestAgentPermissions(t *testing.T) {
 		mock.Text("Done."),
 	)
 	approved.Store(true)
-	a2, _ := agent.New(
-		agent.WithProvider(p2),
-		agent.WithTools(dangerous),
-		agent.WithPermission(permission.Default(), approver),
+	a2, _ := New(
+		WithProvider(p2),
+		WithTools(dangerous),
+		WithPermission(DefaultPermissionPolicy(), approver),
 	)
 	res2, err := a2.Run(context.Background(), "s2", "destroy it")
 	if err != nil {
@@ -194,9 +190,9 @@ func TestAgentSubAgent(t *testing.T) {
 	childProvider := mock.New(
 		mock.Text("child answer"),
 	)
-	child, err := agent.New(
-		agent.WithName("child-agent"),
-		agent.WithProvider(childProvider),
+	child, err := New(
+		WithName("child-agent"),
+		WithProvider(childProvider),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -209,15 +205,15 @@ func TestAgentSubAgent(t *testing.T) {
 		mock.Text("final parent answer"),
 	)
 
-	var childEventsReceived []agent.Event
-	parent, err := agent.New(
-		agent.WithName("parent-agent"),
-		agent.WithProvider(parentProvider),
-		agent.WithTools(childTool),
-		agent.WithHooks(hook.Hooks{
-			OnEvent: func(ctx context.Context, ev any) {
-				if e, ok := ev.(agent.Event); ok && e.Agent == "child-agent" {
-					childEventsReceived = append(childEventsReceived, e)
+	var childEventsReceived []Event
+	parent, err := New(
+		WithName("parent-agent"),
+		WithProvider(parentProvider),
+		WithTools(childTool),
+		WithHooks(Hooks{
+			OnEvent: func(ctx context.Context, ev Event) {
+				if ev.Agent == "child-agent" {
+					childEventsReceived = append(childEventsReceived, ev)
 				}
 			},
 		}),
@@ -247,7 +243,7 @@ func TestStreamBreakCancellation(t *testing.T) {
 	)
 	p.ChunkSize = 1 // 1 char per chunk
 
-	a, err := agent.New(agent.WithProvider(p))
+	a, err := New(WithProvider(p))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +253,7 @@ func TestStreamBreakCancellation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ev.Type == agent.EventTextDelta {
+		if ev.Type == EventTextDelta {
 			count++
 			if count == 3 {
 				break // early break
