@@ -11,7 +11,7 @@ Features a unified ReAct (Reasoning + Acting) loop with support for both streami
 - **Unified Top-Level Package:** Core primitives (`Agent`, `Tool`, `Skill`, `Policy`, `Store`, `Hook`, `Event`, `Plugin`, `ContextManager`) are all directly exported by `github.com/gosolu/react`.
 - **Unified ReAct Engine:** A single loop powers both non-streaming (`Run`) and streaming (`Stream`) execution.
 - **Go 1.23+ Iterators:** Streaming exposes range-over-func iterators (`iter.Seq2[Event, error]`) with cancellation on break.
-- **Zero Heavy SDK Dependencies:** Standard library HTTP clients and SSE parsers for OpenAI and Anthropic. Only one external dependency (`gopkg.in/yaml.v3`) for parsing skill frontmatter.
+- **Zero External Dependencies:** Built 100% on the Go standard library (no third-party dependencies required). Native HTTP clients, SSE parsers, and a built-in YAML frontmatter parser for skills.
 - **Provider Abstraction:**
   - `llm/openai`: Works with OpenAI and OpenAI-compatible endpoints (Ollama, vLLM, DeepSeek, LocalAI, etc.).
   - `llm/anthropic`: Anthropic Messages API.

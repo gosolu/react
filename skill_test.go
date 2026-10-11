@@ -18,10 +18,56 @@ var testFS = fstest.MapFS{
 }
 
 func TestParse(t *testing.T) {
-	fm, body, err := Parse([]byte("---\r\nname: x\r\ndescription: y\r\n---\r\nhello\r\n"))
-	if err != nil || fm.Name != "x" || fm.Description != "y" || body != "hello" {
-		t.Fatalf("%+v %q %v", fm, body, err)
-	}
+	t.Run("basic", func(t *testing.T) {
+		fm, body, err := Parse([]byte("---\r\nname: x\r\ndescription: y\r\n---\r\nhello\r\n"))
+		if err != nil || fm.Name != "x" || fm.Description != "y" || body != "hello" {
+			t.Fatalf("%+v %q %v", fm, body, err)
+		}
+	})
+
+	t.Run("rich yaml frontmatter", func(t *testing.T) {
+		raw := `---
+# Skill definition
+name: "data-analyzer"
+description: >
+  Performs data analysis
+  and statistical modeling.
+allowed-tools:
+  - shell
+  - python
+  - 'sql-query'
+metadata:
+  version: 2.1
+  category: analytics
+  safe_mode: true
+author: "Google"
+---
+# Instructions
+Run scripts directly.
+`
+		fm, body, err := Parse([]byte(raw))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if fm.Name != "data-analyzer" {
+			t.Fatalf("unexpected name: %s", fm.Name)
+		}
+		if !strings.Contains(fm.Description, "Performs data analysis and statistical modeling") {
+			t.Fatalf("unexpected description: %s", fm.Description)
+		}
+		if len(fm.AllowedTools) != 3 || fm.AllowedTools[0] != "shell" || fm.AllowedTools[1] != "python" || fm.AllowedTools[2] != "sql-query" {
+			t.Fatalf("unexpected allowed tools: %v", fm.AllowedTools)
+		}
+		if fm.Metadata["version"] != 2.1 || fm.Metadata["category"] != "analytics" || fm.Metadata["safe_mode"] != true {
+			t.Fatalf("unexpected metadata: %v", fm.Metadata)
+		}
+		if fm.Metadata["author"] != "Google" {
+			t.Fatalf("expected extra author in metadata, got: %v", fm.Metadata["author"])
+		}
+		if body != "# Instructions\nRun scripts directly." {
+			t.Fatalf("unexpected body: %q", body)
+		}
+	})
 }
 
 func TestRegistryAndTools(t *testing.T) {
