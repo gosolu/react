@@ -26,8 +26,12 @@ Features a unified ReAct (Reasoning + Acting) loop with support for both streami
   - Directory-traversal protected `read_skill_file` tool.
 - **In-Process Plugins:**
   - Modular plugins can register tools, middleware, skills, hooks, and system prompt fragments.
-- **Lifecycle Hooks:**
-  - Granular hooks for `BeforeModel`, `AfterModel`, `BeforeTool`, `AfterTool`, `OnEvent`, and run lifecycle.
+- **Comprehensive Lifecycle Hooks (Claude Code Architecture):**
+  - Prompt & Turn: `BeforePrompt` (block/transform input), `BeforeStop` (block stopping to enforce verification), `OnStopFailure`.
+  - Tool Execution: `BeforeTool` (allow, deny, override result, rewrite arguments, inject context), `AfterTool`, `OnToolFailure`, `AfterToolBatch`.
+  - Matcher Patterns: `MatchTool`, `MatchToolAfter` glob matching.
+  - Model & Context: `BeforeModel`, `AfterModel`, `PreCompact`, `PostCompact`, and dynamic `<system-reminder>` context injection.
+  - Permissions & Delegation: `OnPermissionRequest` (automated approval), `OnPermissionDenied`, `SubagentStart`, `SubagentStop`.
 - **Pluggable Session Memory:**
   - Built-in concurrency-safe `InMemory` store.
   - Open `react.Store` interface to connect custom backends (Redis, PostgreSQL, etc.).
@@ -230,6 +234,52 @@ func (p *MyPlugin) Init(ctx context.Context, r react.Registrar) error {
     r.AddSystemPrompt("Always prioritize concise answers.")
     return nil
 }
+```
+
+---
+
+## Lifecycle Hooks (Claude Code Architecture)
+
+Attach granular lifecycle hooks via `react.WithHooks(...)` to control prompts, tool calls, model requests, and termination:
+
+```go
+agent, _ := react.New(
+    react.WithModel("claude-3-7-sonnet", provider),
+    react.WithTools(tools...),
+    react.WithHooks(react.Hooks{
+        // 1. Inspect or sanitize user prompts before agent processes them
+        BeforePrompt: func(ctx context.Context, rc *react.RunContext, prompt string) (react.HookPromptDecision, error) {
+            if strings.Contains(prompt, "drop database") {
+                return react.HookPromptDecision{Action: react.HookDeny, Reason: "disallowed command"}, nil
+            }
+            return react.HookPromptDecision{Action: react.HookContinue}, nil
+        },
+
+        // 2. Filter tool execution with MatchTool (glob pattern matching)
+        BeforeTool: react.MatchTool("bash*", func(ctx context.Context, rc *react.RunContext, call *llm.ToolCall) (react.HookDecision, error) {
+            // Can Deny, Override with synthetic result, or rewrite UpdatedArguments
+            return react.HookDecision{Action: react.HookContinue, AdditionalContext: "Running in sandbox"}, nil
+        }),
+
+        // 3. Inspect batches of parallel tool calls after they complete
+        AfterToolBatch: func(ctx context.Context, rc *react.RunContext, results []react.ToolCallResult) error {
+            log.Printf("Turn %d completed %d tool calls", rc.Turn, len(results))
+            return nil
+        },
+
+        // 4. BeforeStop: Prevent agent from stopping prematurely if tasks are unfinished
+        BeforeStop: func(ctx context.Context, rc *react.RunContext, output string) (react.HookDecision, error) {
+            if !testsPassed() {
+                // Keep agent working: injects <system-reminder> feedback into next turn
+                return react.HookDecision{
+                    Action: react.HookContinueWorking,
+                    Reason: "Tests have not passed yet. Please run tests and fix errors before finishing.",
+                }, nil
+            }
+            return react.HookDecision{Action: react.HookContinue}, nil
+        },
+    }),
+)
 ```
 
 ---

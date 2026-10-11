@@ -44,12 +44,35 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 	}
 
 	ctx = WithRunContext(ctx, rc)
+	ctx = withHooks(ctx, a.hooks)
 	ctx = context.WithValue(ctx, depthKey{}, depth)
 	ctx = context.WithValue(ctx, emitterKey{}, emitFunc(emit))
-	defer func() { a.hooks.RunEnd(ctx, rc, err) }()
+	defer func() {
+		if err != nil {
+			a.hooks.StopFailure(ctx, rc, err)
+		}
+		a.hooks.RunEnd(ctx, rc, err)
+	}()
 
-	if err := a.hooks.RunStart(ctx, rc); err != nil {
+	if err = a.hooks.RunStart(ctx, rc); err != nil {
 		return nil, err
+	}
+
+	pdec, perr := a.hooks.BeforePrompt(ctx, rc, input)
+	if perr != nil {
+		err = perr
+		return nil, err
+	}
+	if pdec.Action == HookDeny {
+		reason := pdec.Reason
+		if reason == "" {
+			reason = "prompt blocked by hook"
+		}
+		err = fmt.Errorf("prompt blocked: %s", reason)
+		return nil, err
+	}
+	if pdec.UpdatedPrompt != "" {
+		input = pdec.UpdatedPrompt
 	}
 
 	// Load history.
@@ -104,9 +127,22 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 		result.Turns = turn
 		emit(Event{Type: EventTurnStart})
 
+		a.hooks.PreCompact(ctx, rc, len(history))
 		msgs, ferr := a.cfg.ctxManager.Fit(ctx, a.system, history, a.cfg.contextBudget)
 		if ferr != nil {
 			return result, fmt.Errorf("agent: context manager: %w", ferr)
+		}
+		a.hooks.PostCompact(ctx, rc, len(history), len(msgs))
+
+		if reminders := rc.ConsumeContext(); len(reminders) > 0 {
+			var b strings.Builder
+			b.WriteString("<system-reminder>\n")
+			for _, r := range reminders {
+				b.WriteString(r)
+				b.WriteString("\n")
+			}
+			b.WriteString("</system-reminder>")
+			msgs = append(msgs, llm.UserText(b.String()))
 		}
 		req := &llm.Request{
 			Model:       model,
@@ -153,7 +189,23 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 
 		if len(msg.ToolCalls) == 0 {
 			result.Output = msg.Text()
-			if err := flush(); err != nil {
+			stopDec, stopErr := a.hooks.BeforeStop(ctx, rc, msg.Text())
+			if stopErr != nil {
+				return result, stopErr
+			}
+			if stopDec.Action == HookDeny || stopDec.Action == HookContinueWorking {
+				feedback := stopDec.Reason
+				if feedback == "" {
+					feedback = "Please continue working."
+				}
+				feedbackMsg := llm.UserText(fmt.Sprintf("<system-reminder>\n%s\n</system-reminder>", feedback))
+				history = append(history, feedbackMsg)
+				pending = append(pending, feedbackMsg)
+				result.Messages = append(result.Messages, feedbackMsg)
+				emit(Event{Type: EventTurnEnd})
+				continue
+			}
+			if err = flush(); err != nil {
 				return result, err
 			}
 			emit(Event{Type: EventTurnEnd})
@@ -252,6 +304,9 @@ func (a *Agent) runTools(ctx context.Context, rc *RunContext, calls []llm.ToolCa
 		}
 		msgs[i] = llm.ToolResult(cr.Call.ID, cr.Call.Name, content, cr.Result.IsError)
 	}
+	if berr := a.hooks.AfterToolBatch(ctx, rc, results); berr != nil {
+		// Return batch error if any
+	}
 	return msgs
 }
 
@@ -273,13 +328,28 @@ func (a *Agent) handleCall(ctx context.Context, rc *RunContext, call llm.ToolCal
 
 	switch a.cfg.policy.Check(ctx, spec, call) {
 	case PolicyDeny:
+		a.hooks.PermissionDenied(ctx, rc, call, "denied by policy")
 		return ErrorResult("Error: this tool call was denied by policy."), nil
 	case PolicyAsk:
-		approved, err := a.askApproval(ctx, spec, call, emit)
-		if err != nil {
-			return ToolResult{}, fmt.Errorf("approval failed: %w", err)
+		dec, decErr := a.hooks.PermissionRequest(ctx, rc, ApprovalRequest{AgentName: a.cfg.name, Spec: spec, Call: call})
+		if decErr != nil {
+			return ToolResult{}, decErr
+		}
+		var approved bool
+		if dec.Handled {
+			approved = dec.Approved
+			if len(dec.UpdatedArguments) > 0 {
+				call.Arguments = dec.UpdatedArguments
+			}
+		} else {
+			var err error
+			approved, err = a.askApproval(ctx, spec, call, emit)
+			if err != nil {
+				return ToolResult{}, fmt.Errorf("approval failed: %w", err)
+			}
 		}
 		if !approved {
+			a.hooks.PermissionDenied(ctx, rc, call, "denied by user")
 			return ErrorResult("Error: the user denied this tool call."), nil
 		}
 	}
@@ -302,6 +372,9 @@ func (a *Agent) handleCall(ctx context.Context, rc *RunContext, call llm.ToolCal
 		res, err = exec(ctx, call)
 		if err != nil {
 			res = errorResult(err, res)
+			if ferr := a.hooks.ToolFailure(ctx, rc, call, err); ferr != nil {
+				return res, ferr
+			}
 		}
 	}
 	if err := a.hooks.AfterTool(ctx, rc, call, &res); err != nil {

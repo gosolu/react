@@ -9,6 +9,7 @@ import (
 
 type depthKey struct{}
 type emitterKey struct{}
+type hooksKey struct{}
 
 func depthFrom(ctx context.Context) int {
 	d, _ := ctx.Value(depthKey{}).(int)
@@ -18,6 +19,15 @@ func depthFrom(ctx context.Context) int {
 func emitterFrom(ctx context.Context) emitFunc {
 	e, _ := ctx.Value(emitterKey{}).(emitFunc)
 	return e
+}
+
+func withHooks(ctx context.Context, h HookChain) context.Context {
+	return context.WithValue(ctx, hooksKey{}, h)
+}
+
+func hooksFrom(ctx context.Context) HookChain {
+	h, _ := ctx.Value(hooksKey{}).(HookChain)
+	return h
 }
 
 type subAgentInput struct {
@@ -34,6 +44,17 @@ func (a *Agent) AsTool(name, description string) Tool {
 		if strings.TrimSpace(in.Task) == "" {
 			return "", errors.New("task is required")
 		}
+		rc := RunContextFrom(ctx)
+		parentHooks := hooksFrom(ctx)
+		parentHooks.SubagentStart(ctx, rc, name, in.Task)
+		a.hooks.SubagentStart(ctx, rc, name, in.Task)
+		var subErr error
+		var output string
+		defer func() {
+			parentHooks.SubagentStop(ctx, rc, name, in.Task, output, subErr)
+			a.hooks.SubagentStop(ctx, rc, name, in.Task, output, subErr)
+		}()
+
 		cctx := context.WithValue(ctx, depthKey{}, depthFrom(ctx)+1)
 		var opts []RunOption
 		if parent := emitterFrom(ctx); parent != nil {
@@ -41,11 +62,14 @@ func (a *Agent) AsTool(name, description string) Tool {
 		}
 		res, err := a.Run(cctx, "", in.Task, opts...)
 		if err != nil {
+			subErr = err
 			if res != nil && res.Output != "" {
+				output = res.Output
 				return fmt.Sprintf("%s\n\n(sub-agent stopped early: %v)", res.Output, err), nil
 			}
 			return "", fmt.Errorf("sub-agent %s: %w", a.cfg.name, err)
 		}
+		output = res.Output
 		return res.Output, nil
 	})
 }
