@@ -1,0 +1,53 @@
+# golangci-lint configuration file
+# Reference: https://golangci-lint.run/docs/configuration/file/
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errcheck
+    - gocritic
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr
+    - staticcheck
+    - unconvert
+    - unused
+  settings:
+    govet:
+      enable-all: false
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - hugeParam
+        - unnamedResult
+        - rangeValCopy
+        - nestingReduce
+        - sloppyReassign
+        - ifElseChain
+        - paramTypeCombine
+        - emptyStringTest
+        - octalLiteral
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gocritic
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
