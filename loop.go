@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-
 )
 
 type emitFunc func(Event) bool
@@ -300,9 +299,7 @@ func (a *Agent) runTools(ctx context.Context, rc *RunContext, calls []ToolCall, 
 		}
 		msgs[i] = ToolResultMessage(cr.Call.ID, cr.Call.Name, content, cr.Result.IsError)
 	}
-	if berr := a.hooks.AfterToolBatch(ctx, rc, results); berr != nil {
-		// Return batch error if any
-	}
+	_ = a.hooks.AfterToolBatch(ctx, rc, results)
 	return msgs
 }
 

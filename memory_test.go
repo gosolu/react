@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sync"
 	"testing"
-
 )
 
 func TestInMemory(t *testing.T) {
@@ -86,12 +85,10 @@ func runStoreTest(t *testing.T, newStore func() Store) {
 		s := newStore()
 		var wg sync.WaitGroup
 		for i := range 20 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				_ = s.Append(ctx, "c", UserText(fmt.Sprint(i)))
 				_, _ = s.Load(ctx, "c")
-			}()
+			})
 		}
 		wg.Wait()
 		got, _ := s.Load(ctx, "c")

@@ -3,8 +3,8 @@ package react
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
-
 )
 
 // ToolHandler executes a tool call.
@@ -15,8 +15,8 @@ type ToolMiddleware func(next ToolHandler) ToolHandler
 
 // ChainToolMiddleware wraps h with mws; the first middleware is the outermost.
 func ChainToolMiddleware(h ToolHandler, mws ...ToolMiddleware) ToolHandler {
-	for i := len(mws) - 1; i >= 0; i-- {
-		h = mws[i](h)
+	for _, mw := range slices.Backward(mws) {
+		h = mw(h)
 	}
 	return h
 }

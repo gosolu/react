@@ -6,7 +6,6 @@ import (
 	"path"
 	"strings"
 	"sync"
-
 )
 
 // RunContext describes the current agent run. Fields are set by the agent;

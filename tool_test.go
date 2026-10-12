@@ -8,7 +8,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
 )
 
 type nested struct {
@@ -25,7 +24,6 @@ type sample struct {
 	Nested nested            `json:"nested"`
 	Self   *sample           `json:"self,omitempty"`
 	Skip   string            `json:"-"`
-	hidden string
 }
 
 func TestSchema(t *testing.T) {

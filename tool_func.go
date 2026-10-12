@@ -5,14 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-
 )
 
 // ToolOption customises a typed tool's spec.
 type ToolOption func(*ToolSpec)
 
 // WithToolAnnotations sets the tool's annotations.
-func WithToolAnnotations(a ToolAnnotations) ToolOption { return func(s *ToolSpec) { s.Annotations = a } }
+func WithToolAnnotations(a ToolAnnotations) ToolOption {
+	return func(s *ToolSpec) { s.Annotations = a }
+}
 
 // ReadOnly marks the tool as side-effect free.
 func ReadOnly() ToolOption { return func(s *ToolSpec) { s.Annotations.ReadOnly = true } }
@@ -24,7 +25,9 @@ func Destructive() ToolOption { return func(s *ToolSpec) { s.Annotations.Destruc
 func Sequential() ToolOption { return func(s *ToolSpec) { s.Annotations.Sequential = true } }
 
 // WithToolSchema overrides the generated input schema.
-func WithToolSchema(schema json.RawMessage) ToolOption { return func(s *ToolSpec) { s.InputSchema = schema } }
+func WithToolSchema(schema json.RawMessage) ToolOption {
+	return func(s *ToolSpec) { s.InputSchema = schema }
+}
 
 // New builds a tool from a typed Go function. The input schema is derived
 // from In (see SchemaFor). Out is converted to the result as follows:

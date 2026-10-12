@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"path"
 	"strconv"
 	"strings"
@@ -145,13 +146,15 @@ func parseYAMLHeader(header string) (Frontmatter, error) {
 		}
 		// Count leading spaces (tabs count as 2 spaces)
 		indent := 0
+	countIndent:
 		for _, ch := range raw {
-			if ch == ' ' {
+			switch ch {
+			case ' ':
 				indent++
-			} else if ch == '\t' {
+			case '\t':
 				indent += 2
-			} else {
-				break
+			default:
+				break countIndent
 			}
 		}
 		lines = append(lines, yamlLine{indent: indent, text: trimmed})
@@ -204,9 +207,7 @@ func parseYAMLBlock(lines []yamlLine, start int, baseIndent int) (any, int) {
 					}
 					sub, nextI := parseYAMLBlock(lines, nextIdx, lines[nextIdx].indent)
 					if sm, ok := sub.(map[string]any); ok {
-						for sk, sv := range sm {
-							childMap[sk] = sv
-						}
+						maps.Copy(childMap, sm)
 					}
 					list = append(list, childMap)
 					i = nextI

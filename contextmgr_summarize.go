@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-
 )
 
 // DefaultSummaryPrompt instructs the model how to compact history.

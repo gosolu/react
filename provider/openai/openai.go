@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"maps"
 	"net/http"
 	"strings"
 
@@ -68,7 +69,7 @@ func (p *Provider) Generate(ctx context.Context, req *react.Request) (*react.Res
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var chatResp chatCompletionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
@@ -127,7 +128,7 @@ func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[rea
 			yield(react.StreamEvent{}, err)
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		seenTools := make(map[int]bool)
 
@@ -210,9 +211,7 @@ func (p *Provider) setHeaders(req *http.Request) {
 
 func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]any {
 	body := make(map[string]any)
-	for k, v := range req.Extra {
-		body[k] = v
-	}
+	maps.Copy(body, req.Extra)
 
 	body["model"] = req.Model
 	body["stream"] = stream
@@ -253,9 +252,10 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 			if hasImages {
 				var parts []map[string]any
 				for _, p := range m.Content {
-					if p.Type == react.PartText {
+					switch p.Type {
+					case react.PartText:
 						parts = append(parts, map[string]any{"type": "text", "text": p.Text})
-					} else if p.Type == react.PartImage {
+					case react.PartImage:
 						url := p.ImageURL
 						if url == "" && len(p.Data) > 0 {
 							url = fmt.Sprintf("data:%s;base64,%s", p.MIMEType, base64.StdEncoding.EncodeToString(p.Data))

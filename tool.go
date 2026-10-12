@@ -19,7 +19,7 @@ type ToolSpec struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
-	Annotations ToolAnnotations `json:"annotations,omitempty"`
+	Annotations ToolAnnotations `json:"annotations"`
 }
 
 // ToolAnnotations are hints used by the agent's permission policy and executor.

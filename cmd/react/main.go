@@ -98,7 +98,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to create agent: %v\n", err)
 		os.Exit(1)
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -110,10 +110,7 @@ func main() {
 
 	sessionID := *sessionFlag
 
-	for {
-		if ctx.Err() != nil {
-			break
-		}
+	for ctx.Err() == nil {
 		fmt.Printf("\n(%s) > ", sessionID)
 		line, err := reader.ReadString('\n')
 		if err != nil {

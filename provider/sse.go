@@ -108,7 +108,7 @@ func (p RetryPolicy) Do(ctx context.Context, client *http.Client, provider strin
 			return resp, nil
 		} else {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			apiErr := &APIError{Provider: provider, StatusCode: resp.StatusCode, Body: string(body)}
 			if !apiErr.Retryable() {
 				return nil, apiErr

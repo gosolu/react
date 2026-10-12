@@ -79,20 +79,20 @@ func New(opts ...Option) (*Agent, error) {
 	for _, p := range cfg.plugins {
 		reg.current = p.Name()
 		if err := p.Init(context.Background(), reg); err != nil {
-			a.Close()
+			_ = a.Close()
 			return nil, fmt.Errorf("agent: plugin %q: %w", p.Name(), err)
 		}
 		a.plugins = append(a.plugins, p)
 	}
 
 	if err := a.skills.Load(reg.skillSources...); err != nil && cfg.strictSkills {
-		a.Close()
+		_ = a.Close()
 		return nil, fmt.Errorf("agent: load skills: %w", err)
 	}
 	if a.skills.Len() > 0 {
 		for _, t := range a.skills.Tools() {
 			if err := a.registry.Register(t); err != nil {
-				a.Close()
+				_ = a.Close()
 				return nil, err
 			}
 		}
@@ -161,7 +161,7 @@ func (r *registrar) AddTool(t Tool) error {
 func (r *registrar) AddToolMiddleware(m ToolMiddleware) { r.a.middleware = append(r.a.middleware, m) }
 
 func (r *registrar) AddSkillSource(src SkillSource) { r.skillSources = append(r.skillSources, src) }
-func (r *registrar) AddHooks(h Hooks)           { r.a.hooks = append(r.a.hooks, h) }
+func (r *registrar) AddHooks(h Hooks)               { r.a.hooks = append(r.a.hooks, h) }
 func (r *registrar) AddSystemPrompt(s string) {
 	if s = strings.TrimSpace(s); s != "" {
 		r.prompts = append(r.prompts, s)

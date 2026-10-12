@@ -21,7 +21,7 @@ func TestAnthropicGenerate(t *testing.T) {
 			t.Errorf("missing anthropic-version header")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintln(w, `{
+		_, _ = fmt.Fprintln(w, `{
 			"id": "msg_123",
 			"type": "message",
 			"role": "assistant",
@@ -89,7 +89,7 @@ data: {"type":"message_stop"}
 `
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, sseData)
+		_, _ = fmt.Fprint(w, sseData)
 	}))
 	defer ts.Close()
 

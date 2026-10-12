@@ -7,7 +7,6 @@ import (
 	"runtime/debug"
 	"sync"
 	"time"
-
 )
 
 // ToolCallResult is the outcome of executing one call.

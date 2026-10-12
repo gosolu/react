@@ -5,7 +5,6 @@ package react
 import (
 	"context"
 	"slices"
-
 )
 
 // ContextManager trims or compacts messages so that system+messages fit within

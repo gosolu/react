@@ -8,7 +8,6 @@ package react
 import (
 	"context"
 	"sync"
-
 )
 
 // Store persists conversation history keyed by session ID.

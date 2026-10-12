@@ -2,7 +2,6 @@ package react
 
 import (
 	"time"
-
 )
 
 // Option configures an Agent.

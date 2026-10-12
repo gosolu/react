@@ -18,7 +18,7 @@ func TestOpenAIGenerate(t *testing.T) {
 			t.Errorf("missing or bad auth header: %v", r.Header.Get("Authorization"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintln(w, `{
+		_, _ = fmt.Fprintln(w, `{
 			"choices": [{
 				"message": {
 					"content": "Hello world",
@@ -82,7 +82,7 @@ data: [DONE]
 `
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, sseData)
+		_, _ = fmt.Fprint(w, sseData)
 	}))
 	defer ts.Close()
 
@@ -134,7 +134,7 @@ func TestOpenAIFinishReasons(t *testing.T) {
 		t.Run(tc.finishReason, func(t *testing.T) {
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				fmt.Fprintf(w, `{
+				_, _ = fmt.Fprintf(w, `{
 					"choices": [{
 						"message": {"content": "ok"},
 						"finish_reason": %q

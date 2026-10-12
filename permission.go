@@ -3,7 +3,6 @@ package react
 import (
 	"context"
 	"path"
-
 )
 
 // PolicyDecision is a policy verdict.

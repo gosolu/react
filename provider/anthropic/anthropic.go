@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"maps"
 	"net/http"
 	"strings"
 
@@ -73,7 +74,7 @@ func (p *Provider) Generate(ctx context.Context, req *react.Request) (*react.Res
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var msgResp messagesResponse
 	if err := json.NewDecoder(resp.Body).Decode(&msgResp); err != nil {
@@ -129,7 +130,7 @@ func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[rea
 			yield(react.StreamEvent{}, err)
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		var currentUsage react.Usage
 
@@ -214,9 +215,7 @@ func (p *Provider) setHeaders(req *http.Request) {
 
 func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]any {
 	body := make(map[string]any)
-	for k, v := range req.Extra {
-		body[k] = v
-	}
+	maps.Copy(body, req.Extra)
 
 	body["model"] = req.Model
 	body["stream"] = stream
@@ -248,9 +247,10 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 		case react.RoleUser:
 			var content []map[string]any
 			for _, part := range m.Content {
-				if part.Type == react.PartText {
+				switch part.Type {
+				case react.PartText:
 					content = append(content, map[string]any{"type": "text", "text": part.Text})
-				} else if part.Type == react.PartImage {
+				case react.PartImage:
 					mediaType := part.MIMEType
 					if mediaType == "" {
 						mediaType = "image/jpeg"
