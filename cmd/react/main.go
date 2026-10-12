@@ -12,13 +12,14 @@ import (
 
 	"github.com/gosolu/react"
 	"github.com/gosolu/react/provider/anthropic"
+	"github.com/gosolu/react/provider/deepseek"
 	"github.com/gosolu/react/provider/mock"
 	"github.com/gosolu/react/provider/openai"
 	"github.com/gosolu/react/tools/builtin"
 )
 
 func main() {
-	providerFlag := flag.String("provider", "mock", "LLM provider: openai | anthropic | mock")
+	providerFlag := flag.String("provider", "mock", "LLM provider: openai | anthropic | deepseek | mock")
 	modelFlag := flag.String("model", "", "Model identifier (defaults to provider standard)")
 	baseURLFlag := flag.String("base-url", "", "Custom BaseURL (e.g. for Ollama / vLLM / local AI)")
 	streamFlag := flag.Bool("stream", true, "Enable streaming responses")
@@ -55,12 +56,24 @@ func main() {
 			APIKey:  apiKey,
 			BaseURL: *baseURLFlag,
 		})
+	case "deepseek":
+		apiKey := os.Getenv("DEEPSEEK_API_KEY")
+		if apiKey == "" {
+			fmt.Println("Warning: DEEPSEEK_API_KEY environment variable is not set.")
+		}
+		if model == "" {
+			model = deepseek.ModelChat
+		}
+		p = deepseek.New(deepseek.Config{
+			APIKey:  apiKey,
+			BaseURL: *baseURLFlag,
+		})
 	case "mock":
 		if model == "" {
 			model = "mock-model"
 		}
 		p = mock.New(
-			mock.Text("Hello! I am running in mock offline mode. Configure --provider openai or anthropic for live models."),
+			mock.Text("Hello! I am running in mock offline mode. Configure --provider openai, anthropic, or deepseek for live models."),
 		)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown provider: %s\n", *providerFlag)

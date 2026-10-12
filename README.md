@@ -13,7 +13,8 @@ Features a unified ReAct (Reasoning + Acting) loop with support for both streami
 - **Go 1.23+ Iterators:** Streaming exposes range-over-func iterators (`iter.Seq2[Event, error]`) with cancellation on break.
 - **Zero External Dependencies:** Built 100% on the Go standard library (no third-party dependencies required). Native HTTP clients, SSE parsers, and a built-in YAML frontmatter parser for skills.
 - **Provider Abstraction:**
-  - `provider/openai`: Works with OpenAI and OpenAI-compatible endpoints (Ollama, vLLM, DeepSeek, LocalAI, etc.).
+  - `provider/deepseek`: Native DeepSeek API client with vision (`deepseek-flash`) and reasoning (`deepseek-reasoner` / R1).
+  - `provider/openai`: Works with OpenAI and OpenAI-compatible endpoints (Ollama, vLLM, LocalAI, etc.).
   - `provider/anthropic`: Anthropic Messages API.
   - `provider/mock`: Scripted provider for deterministic testing and offline development.
 - **Type-safe Tools:**
@@ -69,6 +70,7 @@ react/
 ├── provider.go, message.go, stream.go                          # Messages, streaming accumulator, provider interface
 └── provider/                                                          # Provider abstraction and HTTP clients
     ├── anthropic/                                                # Anthropic Messages API client
+    ├── deepseek/                                                 # DeepSeek API client (vision, chat, reasoner)
     ├── mock/                                                     # Scripted mock provider for testing
     └── openai/                                                   # OpenAI-compatible API client
 ```
