@@ -9,7 +9,6 @@ import (
 	"context"
 	"sync"
 
-	"github.com/gosolu/react/llm"
 )
 
 // Store persists conversation history keyed by session ID.
@@ -18,38 +17,38 @@ import (
 // returns an empty history and no error. Implementations must not retain or
 // mutate the caller's slices.
 type Store interface {
-	Load(ctx context.Context, sessionID string) ([]llm.Message, error)
-	Append(ctx context.Context, sessionID string, msgs ...llm.Message) error
-	Replace(ctx context.Context, sessionID string, msgs []llm.Message) error
+	Load(ctx context.Context, sessionID string) ([]Message, error)
+	Append(ctx context.Context, sessionID string, msgs ...Message) error
+	Replace(ctx context.Context, sessionID string, msgs []Message) error
 	Delete(ctx context.Context, sessionID string) error
 }
 
 // InMemory is a process-local Store.
 type InMemory struct {
 	mu       sync.RWMutex
-	sessions map[string][]llm.Message
+	sessions map[string][]Message
 }
 
 // NewInMemory returns an empty in-memory store.
-func NewInMemory() *InMemory { return &InMemory{sessions: map[string][]llm.Message{}} }
+func NewInMemory() *InMemory { return &InMemory{sessions: map[string][]Message{}} }
 
-func (s *InMemory) Load(_ context.Context, id string) ([]llm.Message, error) {
+func (s *InMemory) Load(_ context.Context, id string) ([]Message, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return llm.CloneMessages(s.sessions[id]), nil
+	return CloneMessages(s.sessions[id]), nil
 }
 
-func (s *InMemory) Append(_ context.Context, id string, msgs ...llm.Message) error {
+func (s *InMemory) Append(_ context.Context, id string, msgs ...Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.sessions[id] = append(s.sessions[id], llm.CloneMessages(msgs)...)
+	s.sessions[id] = append(s.sessions[id], CloneMessages(msgs)...)
 	return nil
 }
 
-func (s *InMemory) Replace(_ context.Context, id string, msgs []llm.Message) error {
+func (s *InMemory) Replace(_ context.Context, id string, msgs []Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.sessions[id] = llm.CloneMessages(msgs)
+	s.sessions[id] = CloneMessages(msgs)
 	return nil
 }
 

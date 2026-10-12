@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gosolu/react/llm"
-	"github.com/gosolu/react/llm/openai"
+	"github.com/gosolu/react"
+	"github.com/gosolu/react/provider/openai"
 )
 
 func TestOpenAIGenerate(t *testing.T) {
@@ -45,9 +45,9 @@ func TestOpenAIGenerate(t *testing.T) {
 		BaseURL: ts.URL,
 	})
 
-	resp, err := p.Generate(context.Background(), &llm.Request{
+	resp, err := p.Generate(context.Background(), &react.Request{
 		Model:    "gpt-4o",
-		Messages: []llm.Message{llm.UserText("hi")},
+		Messages: []react.Message{react.UserText("hi")},
 	})
 	if err != nil {
 		t.Fatalf("Generate failed: %v", err)
@@ -58,7 +58,7 @@ func TestOpenAIGenerate(t *testing.T) {
 	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].Name != "lookup" {
 		t.Fatalf("unexpected tool calls: %+v", resp.Message.ToolCalls)
 	}
-	if resp.StopReason != llm.StopToolUse {
+	if resp.StopReason != react.StopToolCall {
 		t.Fatalf("stop reason = %v", resp.StopReason)
 	}
 	if resp.Usage.InputTokens != 12 || resp.Usage.OutputTokens != 6 {
@@ -91,8 +91,8 @@ data: [DONE]
 		BaseURL: ts.URL,
 	})
 
-	var acc llm.Accumulator
-	for ev, err := range p.Stream(context.Background(), &llm.Request{Model: "gpt-4o"}) {
+	var acc react.Accumulator
+	for ev, err := range p.Stream(context.Background(), &react.Request{Model: "gpt-4o"}) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -109,10 +109,49 @@ data: [DONE]
 	if !strings.Contains(string(resp.Message.ToolCalls[0].Arguments), "1}") {
 		t.Fatalf("tool args = %s", string(resp.Message.ToolCalls[0].Arguments))
 	}
-	if resp.StopReason != llm.StopToolUse {
+	if resp.StopReason != react.StopToolCall {
 		t.Fatalf("stop = %v", resp.StopReason)
 	}
 	if resp.Usage.InputTokens != 10 || resp.Usage.OutputTokens != 5 {
 		t.Fatalf("usage = %+v", resp.Usage)
+	}
+}
+
+func TestOpenAIFinishReasons(t *testing.T) {
+	cases := []struct {
+		finishReason string
+		expected     react.StopReason
+	}{
+		{"stop", react.StopEnd},
+		{"length", react.StopLength},
+		{"tool_calls", react.StopToolCall},
+		{"function_call", react.StopToolCall},
+		{"content_filter", react.StopContentFilter},
+		{"unknown_custom", react.StopOther},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.finishReason, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{
+					"choices": [{
+						"message": {"content": "ok"},
+						"finish_reason": %q
+					}],
+					"usage": {"prompt_tokens": 1, "completion_tokens": 1}
+				}`, tc.finishReason)
+			}))
+			defer ts.Close()
+
+			p := openai.New(openai.Config{APIKey: "k", BaseURL: ts.URL})
+			resp, err := p.Generate(context.Background(), &react.Request{Model: "gpt-4o", Messages: []react.Message{react.UserText("test")}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StopReason != tc.expected {
+				t.Fatalf("finish_reason %q got %v, want %v", tc.finishReason, resp.StopReason, tc.expected)
+			}
+		})
 	}
 }

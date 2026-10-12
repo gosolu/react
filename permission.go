@@ -4,7 +4,6 @@ import (
 	"context"
 	"path"
 
-	"github.com/gosolu/react/llm"
 )
 
 // PolicyDecision is a policy verdict.
@@ -30,24 +29,24 @@ func (d PolicyDecision) String() string {
 
 // PermissionPolicy evaluates a tool call.
 type PermissionPolicy interface {
-	Check(ctx context.Context, spec ToolSpec, call llm.ToolCall) PolicyDecision
+	Check(ctx context.Context, spec ToolSpec, call ToolCall) PolicyDecision
 }
 
 // PermissionPolicyFunc adapts a function to PermissionPolicy.
-type PermissionPolicyFunc func(ctx context.Context, spec ToolSpec, call llm.ToolCall) PolicyDecision
+type PermissionPolicyFunc func(ctx context.Context, spec ToolSpec, call ToolCall) PolicyDecision
 
-func (f PermissionPolicyFunc) Check(ctx context.Context, spec ToolSpec, call llm.ToolCall) PolicyDecision {
+func (f PermissionPolicyFunc) Check(ctx context.Context, spec ToolSpec, call ToolCall) PolicyDecision {
 	return f(ctx, spec, call)
 }
 
 // AllowAllPermissionPolicy permits every call.
 func AllowAllPermissionPolicy() PermissionPolicy {
-	return PermissionPolicyFunc(func(context.Context, ToolSpec, llm.ToolCall) PolicyDecision { return PolicyAllow })
+	return PermissionPolicyFunc(func(context.Context, ToolSpec, ToolCall) PolicyDecision { return PolicyAllow })
 }
 
 // DefaultPermissionPolicy allows read-only and unannotated tools and asks for Destructive ones.
 func DefaultPermissionPolicy() PermissionPolicy {
-	return PermissionPolicyFunc(func(_ context.Context, s ToolSpec, _ llm.ToolCall) PolicyDecision {
+	return PermissionPolicyFunc(func(_ context.Context, s ToolSpec, _ ToolCall) PolicyDecision {
 		if s.Annotations.Destructive && !s.Annotations.ReadOnly {
 			return PolicyAsk
 		}
@@ -64,7 +63,7 @@ type PermissionRules struct {
 	Fallback PermissionPolicy
 }
 
-func (r PermissionRules) Check(ctx context.Context, s ToolSpec, c llm.ToolCall) PolicyDecision {
+func (r PermissionRules) Check(ctx context.Context, s ToolSpec, c ToolCall) PolicyDecision {
 	switch {
 	case match(r.Deny, s.Name):
 		return PolicyDeny
@@ -92,7 +91,7 @@ func match(patterns []string, name string) bool {
 type ApprovalRequest struct {
 	AgentName string
 	Spec      ToolSpec
-	Call      llm.ToolCall
+	Call      ToolCall
 }
 
 // PermissionApprover asks a human (or system) to approve a call. Approve calls are

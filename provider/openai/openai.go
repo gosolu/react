@@ -1,4 +1,4 @@
-// Package openai implements an OpenAI-compatible llm.Provider.
+// Package openai implements an OpenAI-compatible react.Provider.
 // It supports standard OpenAI endpoints as well as compatible APIs
 // like vLLM, Ollama, DeepSeek, LocalAI, etc.
 package openai
@@ -14,7 +14,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gosolu/react/llm"
+	"github.com/gosolu/react"
+	"github.com/gosolu/react/provider"
 )
 
 // DefaultBaseURL is OpenAI's official API base URL.
@@ -25,11 +26,11 @@ type Config struct {
 	APIKey      string
 	BaseURL     string       // defaults to DefaultBaseURL
 	HTTPClient  *http.Client // defaults to http.DefaultClient
-	RetryPolicy llm.RetryPolicy
+	RetryPolicy provider.RetryPolicy
 	ExtraHeader map[string]string
 }
 
-// Provider implements llm.Provider for OpenAI and compatible APIs.
+// Provider implements react.Provider for OpenAI and compatible APIs.
 type Provider struct {
 	cfg Config
 }
@@ -43,13 +44,13 @@ func New(cfg Config) *Provider {
 	return &Provider{cfg: cfg}
 }
 
-// Name implements llm.Provider.
+// Name implements react.Provider.
 func (p *Provider) Name() string {
 	return "openai"
 }
 
-// Generate implements llm.Provider (non-streaming).
-func (p *Provider) Generate(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+// Generate implements react.Provider (non-streaming).
+func (p *Provider) Generate(ctx context.Context, req *react.Request) (*react.Response, error) {
 	bodyMap := p.buildRequestBody(req, false)
 	data, err := json.Marshal(bodyMap)
 	if err != nil {
@@ -79,37 +80,37 @@ func (p *Provider) Generate(ctx context.Context, req *llm.Request) (*llm.Respons
 	}
 
 	choice := chatResp.Choices[0]
-	msg := llm.Message{
-		Role: llm.RoleAssistant,
+	msg := react.Message{
+		Role: react.RoleAssistant,
 	}
 	if choice.Message.Content != "" {
-		msg.Content = []llm.Part{llm.TextPart(choice.Message.Content)}
+		msg.Content = []react.Part{react.TextPart(choice.Message.Content)}
 	}
 	for _, tc := range choice.Message.ToolCalls {
-		msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{
+		msg.ToolCalls = append(msg.ToolCalls, react.ToolCall{
 			ID:        tc.ID,
 			Name:      tc.Function.Name,
 			Arguments: json.RawMessage(tc.Function.Arguments),
 		})
 	}
 
-	return &llm.Response{
+	return &react.Response{
 		Message:    msg,
 		StopReason: mapFinishReason(choice.FinishReason),
-		Usage: llm.Usage{
+		Usage: react.Usage{
 			InputTokens:  chatResp.Usage.PromptTokens,
 			OutputTokens: chatResp.Usage.CompletionTokens,
 		},
 	}, nil
 }
 
-// Stream implements llm.Provider (server-sent events).
-func (p *Provider) Stream(ctx context.Context, req *llm.Request) iter.Seq2[llm.StreamEvent, error] {
-	return func(yield func(llm.StreamEvent, error) bool) {
+// Stream implements react.Provider (server-sent events).
+func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[react.StreamEvent, error] {
+	return func(yield func(react.StreamEvent, error) bool) {
 		bodyMap := p.buildRequestBody(req, true)
 		data, err := json.Marshal(bodyMap)
 		if err != nil {
-			yield(llm.StreamEvent{}, fmt.Errorf("openai: marshal request: %w", err))
+			yield(react.StreamEvent{}, fmt.Errorf("openai: marshal request: %w", err))
 			return
 		}
 
@@ -123,17 +124,17 @@ func (p *Provider) Stream(ctx context.Context, req *llm.Request) iter.Seq2[llm.S
 			return httpReq, nil
 		})
 		if err != nil {
-			yield(llm.StreamEvent{}, err)
+			yield(react.StreamEvent{}, err)
 			return
 		}
 		defer resp.Body.Close()
 
 		seenTools := make(map[int]bool)
 
-		for sse, err := range llm.ReadSSE(resp.Body) {
+		for sse, err := range provider.ReadSSE(resp.Body) {
 			if err != nil {
 				if err != io.EOF && ctx.Err() == nil {
-					yield(llm.StreamEvent{}, err)
+					yield(react.StreamEvent{}, err)
 				}
 				return
 			}
@@ -145,11 +146,11 @@ func (p *Provider) Stream(ctx context.Context, req *llm.Request) iter.Seq2[llm.S
 				continue
 			}
 			if chunk.Usage != nil {
-				u := llm.Usage{
+				u := react.Usage{
 					InputTokens:  chunk.Usage.PromptTokens,
 					OutputTokens: chunk.Usage.CompletionTokens,
 				}
-				if !yield(llm.StreamEvent{Type: llm.StreamUsage, Usage: &u}, nil) {
+				if !yield(react.StreamEvent{Type: react.StreamUsage, Usage: &u}, nil) {
 					return
 				}
 			}
@@ -158,7 +159,7 @@ func (p *Provider) Stream(ctx context.Context, req *llm.Request) iter.Seq2[llm.S
 			}
 			choice := chunk.Choices[0]
 			if choice.Delta.Content != "" {
-				if !yield(llm.StreamEvent{Type: llm.StreamTextDelta, Text: choice.Delta.Content}, nil) {
+				if !yield(react.StreamEvent{Type: react.StreamTextDelta, Text: choice.Delta.Content}, nil) {
 					return
 				}
 			}
@@ -166,8 +167,8 @@ func (p *Provider) Stream(ctx context.Context, req *llm.Request) iter.Seq2[llm.S
 				idx := tc.Index
 				if !seenTools[idx] {
 					seenTools[idx] = true
-					if !yield(llm.StreamEvent{
-						Type:       llm.StreamToolCallStart,
+					if !yield(react.StreamEvent{
+						Type:       react.StreamToolCallStart,
 						Index:      idx,
 						ToolCallID: tc.ID,
 						ToolName:   tc.Function.Name,
@@ -176,8 +177,8 @@ func (p *Provider) Stream(ctx context.Context, req *llm.Request) iter.Seq2[llm.S
 						return
 					}
 				} else if tc.Function.Arguments != "" {
-					if !yield(llm.StreamEvent{
-						Type:      llm.StreamToolCallDelta,
+					if !yield(react.StreamEvent{
+						Type:      react.StreamToolCallDelta,
 						Index:     idx,
 						ArgsDelta: tc.Function.Arguments,
 					}, nil) {
@@ -186,8 +187,8 @@ func (p *Provider) Stream(ctx context.Context, req *llm.Request) iter.Seq2[llm.S
 				}
 			}
 			if choice.FinishReason != "" {
-				if !yield(llm.StreamEvent{
-					Type:       llm.StreamDone,
+				if !yield(react.StreamEvent{
+					Type:       react.StreamDone,
 					StopReason: mapFinishReason(choice.FinishReason),
 				}, nil) {
 					return
@@ -207,7 +208,7 @@ func (p *Provider) setHeaders(req *http.Request) {
 	}
 }
 
-func (p *Provider) buildRequestBody(req *llm.Request, stream bool) map[string]any {
+func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]any {
 	body := make(map[string]any)
 	for k, v := range req.Extra {
 		body[k] = v
@@ -235,16 +236,16 @@ func (p *Provider) buildRequestBody(req *llm.Request, stream bool) map[string]an
 
 	for _, m := range req.Messages {
 		switch m.Role {
-		case llm.RoleSystem:
+		case react.RoleSystem:
 			messages = append(messages, map[string]any{
 				"role":    "system",
 				"content": m.Text(),
 			})
-		case llm.RoleUser:
+		case react.RoleUser:
 			var content any = m.Text()
 			var hasImages bool
 			for _, p := range m.Content {
-				if p.Type == llm.PartImage {
+				if p.Type == react.PartImage {
 					hasImages = true
 					break
 				}
@@ -252,9 +253,9 @@ func (p *Provider) buildRequestBody(req *llm.Request, stream bool) map[string]an
 			if hasImages {
 				var parts []map[string]any
 				for _, p := range m.Content {
-					if p.Type == llm.PartText {
+					if p.Type == react.PartText {
 						parts = append(parts, map[string]any{"type": "text", "text": p.Text})
-					} else if p.Type == llm.PartImage {
+					} else if p.Type == react.PartImage {
 						url := p.ImageURL
 						if url == "" && len(p.Data) > 0 {
 							url = fmt.Sprintf("data:%s;base64,%s", p.MIMEType, base64.StdEncoding.EncodeToString(p.Data))
@@ -273,7 +274,7 @@ func (p *Provider) buildRequestBody(req *llm.Request, stream bool) map[string]an
 				"role":    "user",
 				"content": content,
 			})
-		case llm.RoleAssistant:
+		case react.RoleAssistant:
 			msgObj := map[string]any{
 				"role":    "assistant",
 				"content": m.Text(),
@@ -293,7 +294,7 @@ func (p *Provider) buildRequestBody(req *llm.Request, stream bool) map[string]an
 				msgObj["tool_calls"] = tcs
 			}
 			messages = append(messages, msgObj)
-		case llm.RoleTool:
+		case react.RoleTool:
 			messages = append(messages, map[string]any{
 				"role":         "tool",
 				"tool_call_id": m.ToolCallID,
@@ -319,7 +320,7 @@ func (p *Provider) buildRequestBody(req *llm.Request, stream bool) map[string]an
 
 		if req.ToolChoice != "" {
 			switch req.ToolChoice {
-			case llm.ToolChoiceAuto, llm.ToolChoiceNone, llm.ToolChoiceRequired:
+			case react.ToolChoiceAuto, react.ToolChoiceNone, react.ToolChoiceRequired:
 				body["tool_choice"] = req.ToolChoice
 			default:
 				body["tool_choice"] = map[string]any{
@@ -335,16 +336,18 @@ func (p *Provider) buildRequestBody(req *llm.Request, stream bool) map[string]an
 	return body
 }
 
-func mapFinishReason(r string) llm.StopReason {
+func mapFinishReason(r string) react.StopReason {
 	switch r {
 	case "stop":
-		return llm.StopEndTurn
+		return react.StopEnd
 	case "tool_calls", "function_call":
-		return llm.StopToolUse
+		return react.StopToolCall
 	case "length":
-		return llm.StopMaxTokens
+		return react.StopLength
+	case "content_filter":
+		return react.StopContentFilter
 	default:
-		return llm.StopOther
+		return react.StopOther
 	}
 }
 

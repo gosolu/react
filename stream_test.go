@@ -1,7 +1,6 @@
-package llm
+package react
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -16,7 +15,7 @@ func TestAccumulatorRoundTrip(t *testing.T) {
 			},
 		},
 		Reasoning:  "thinking...",
-		StopReason: StopToolUse,
+		StopReason: StopToolCall,
 		Usage:      Usage{InputTokens: 7, OutputTokens: 3},
 	}
 	var acc Accumulator
@@ -36,7 +35,7 @@ func TestAccumulatorRoundTrip(t *testing.T) {
 	if len(got.Message.ToolCalls) != 2 || string(got.Message.ToolCalls[1].Arguments) != `{"s":"x"}` || got.Message.ToolCalls[0].ID != "a" {
 		t.Fatalf("calls = %+v", got.Message.ToolCalls)
 	}
-	if got.StopReason != StopToolUse || got.Usage != resp.Usage {
+	if got.StopReason != StopToolCall || got.Usage != resp.Usage {
 		t.Fatalf("stop=%v usage=%+v", got.StopReason, got.Usage)
 	}
 }
@@ -45,21 +44,7 @@ func TestAccumulatorDefaults(t *testing.T) {
 	var acc Accumulator
 	acc.Add(StreamEvent{Type: StreamToolCallStart, Index: 5, ToolCallID: "x", ToolName: "noargs"})
 	r := acc.Response()
-	if string(r.Message.ToolCalls[0].Arguments) != "{}" || r.StopReason != StopToolUse {
+	if string(r.Message.ToolCalls[0].Arguments) != "{}" || r.StopReason != StopToolCall {
 		t.Fatalf("%+v", r)
-	}
-}
-
-func TestReadSSE(t *testing.T) {
-	in := ": comment\nevent: a\ndata: one\ndata: two\n\ndata: {\"x\":1}\n\ndata: [DONE]\n"
-	var got []SSEEvent
-	for ev, err := range ReadSSE(strings.NewReader(in)) {
-		if err != nil {
-			t.Fatal(err)
-		}
-		got = append(got, ev)
-	}
-	if len(got) != 3 || got[0].Event != "a" || got[0].Data != "one\ntwo" || got[1].Data != `{"x":1}` || got[2].Data != "[DONE]" {
-		t.Fatalf("%+v", got)
 	}
 }

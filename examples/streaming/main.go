@@ -6,7 +6,7 @@ import (
 	"log"
 
 	"github.com/gosolu/react"
-	"github.com/gosolu/react/llm/mock"
+	"github.com/gosolu/react/provider/mock"
 )
 
 type weatherArgs struct {

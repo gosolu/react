@@ -3,7 +3,6 @@ package react
 import (
 	"time"
 
-	"github.com/gosolu/react/llm"
 )
 
 // Option configures an Agent.
@@ -11,7 +10,7 @@ type Option func(*config)
 
 type config struct {
 	name          string
-	provider      llm.Provider
+	provider      Provider
 	model         string
 	system        string
 	tools         []Tool
@@ -38,7 +37,7 @@ type config struct {
 func WithName(name string) Option { return func(c *config) { c.name = name } }
 
 // WithProvider sets the model provider (required).
-func WithProvider(p llm.Provider) Option { return func(c *config) { c.provider = p } }
+func WithProvider(p Provider) Option { return func(c *config) { c.provider = p } }
 
 // WithModel sets the model identifier.
 func WithModel(m string) Option { return func(c *config) { c.model = m } }
@@ -134,21 +133,21 @@ func WithMaxDepth(n int) Option { return func(c *config) { c.maxDepth = n } }
 type RunOption func(*runConfig)
 
 type runConfig struct {
-	parts      []llm.Part
-	history    []llm.Message
+	parts      []Part
+	history    []Message
 	model      string
 	toolChoice string
 	onEvent    func(Event)
 }
 
 // WithInputParts appends extra content (e.g. images) to the user message.
-func WithInputParts(parts ...llm.Part) RunOption {
+func WithInputParts(parts ...Part) RunOption {
 	return func(r *runConfig) { r.parts = append(r.parts, parts...) }
 }
 
 // WithHistory supplies prior messages for a stateless run (empty session ID).
 // It is ignored when a session ID is given.
-func WithHistory(msgs []llm.Message) RunOption { return func(r *runConfig) { r.history = msgs } }
+func WithHistory(msgs []Message) RunOption { return func(r *runConfig) { r.history = msgs } }
 
 // WithRunModel overrides the model for this run.
 func WithRunModel(m string) RunOption { return func(r *runConfig) { r.model = m } }

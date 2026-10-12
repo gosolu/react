@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gosolu/react/llm"
 )
 
 // DefaultSummaryPrompt instructs the model how to compact history.
@@ -24,7 +23,7 @@ Output only the summary.`
 // Summaries are cached by content hash so repeated calls with the same prefix
 // do not re-invoke the model.
 type ContextSummarizer struct {
-	Provider    llm.Provider
+	Provider    Provider
 	Model       string
 	Prompt      string         // defaults to DefaultSummaryPrompt
 	RecentRatio float64        // fraction of budget reserved for recent messages (default 0.5)
@@ -36,7 +35,7 @@ type ContextSummarizer struct {
 }
 
 // Fit implements ContextManager.
-func (s *ContextSummarizer) Fit(ctx context.Context, system string, msgs []llm.Message, budget int) ([]llm.Message, error) {
+func (s *ContextSummarizer) Fit(ctx context.Context, system string, msgs []Message, budget int) ([]Message, error) {
 	est := estimator(s.Estimator)
 	if budget <= 0 || len(msgs) == 0 {
 		return msgs, nil
@@ -67,7 +66,7 @@ func (s *ContextSummarizer) Fit(ctx context.Context, system string, msgs []llm.M
 		if float64(suffix) > ratio*float64(avail) {
 			break
 		}
-		if msgs[us[i].start].Role == llm.RoleUser {
+		if msgs[us[i].start].Role == RoleUser {
 			cut = i
 		}
 	}
@@ -80,16 +79,16 @@ func (s *ContextSummarizer) Fit(ctx context.Context, system string, msgs []llm.M
 	if err != nil {
 		return nil, fmt.Errorf("contextmgr: summarize: %w", err)
 	}
-	out := make([]llm.Message, 0, len(msgs)-cutMsg+2)
+	out := make([]Message, 0, len(msgs)-cutMsg+2)
 	out = append(out,
-		llm.UserText("[Summary of the earlier conversation]\n"+summary),
-		llm.AssistantText("Understood. I'll continue from this summary."),
+		UserText("[Summary of the earlier conversation]\n"+summary),
+		AssistantText("Understood. I'll continue from this summary."),
 	)
 	out = append(out, msgs[cutMsg:]...)
 	return window(system, out, budget, est), nil
 }
 
-func (s *ContextSummarizer) summarize(ctx context.Context, msgs []llm.Message) (string, error) {
+func (s *ContextSummarizer) summarize(ctx context.Context, msgs []Message) (string, error) {
 	transcript := Render(msgs, 2000)
 	sum := sha256.Sum256([]byte(transcript))
 	key := hex.EncodeToString(sum[:])
@@ -109,10 +108,10 @@ func (s *ContextSummarizer) summarize(ctx context.Context, msgs []llm.Message) (
 	if maxTok <= 0 {
 		maxTok = 1024
 	}
-	resp, err := s.Provider.Generate(ctx, &llm.Request{
+	resp, err := s.Provider.Generate(ctx, &Request{
 		Model:     s.Model,
 		System:    prompt,
-		Messages:  []llm.Message{llm.UserText(transcript)},
+		Messages:  []Message{UserText(transcript)},
 		MaxTokens: maxTok,
 	})
 	if err != nil {
@@ -134,11 +133,11 @@ func (s *ContextSummarizer) summarize(ctx context.Context, msgs []llm.Message) (
 
 // Render formats messages as a plain-text transcript, truncating long tool
 // results to maxResult bytes.
-func Render(msgs []llm.Message, maxResult int) string {
+func Render(msgs []Message, maxResult int) string {
 	var b strings.Builder
 	for _, m := range msgs {
 		switch m.Role {
-		case llm.RoleTool:
+		case RoleTool:
 			t := m.Text()
 			if maxResult > 0 && len(t) > maxResult {
 				t = t[:maxResult] + "...[truncated]"

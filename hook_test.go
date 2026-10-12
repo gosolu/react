@@ -1,4 +1,4 @@
-package react
+package react_test
 
 import (
 	"context"
@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/gosolu/react/llm"
-	"github.com/gosolu/react/llm/mock"
+	. "github.com/gosolu/react"
+	"github.com/gosolu/react/provider/mock"
 )
 
 func TestBeforePromptHook(t *testing.T) {
@@ -35,13 +35,13 @@ func TestBeforePromptHook(t *testing.T) {
 
 	t.Run("rewrite prompt and inject context", func(t *testing.T) {
 		var capturedPrompt string
-		p := mock.NewFunc(func(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+		p := mock.NewFunc(func(ctx context.Context, req *Request) (*Response, error) {
 			capturedPrompt = req.Messages[0].Text()
 			// Second message should be system reminder
 			if len(req.Messages) < 2 || req.Messages[1].Text() != "<system-reminder>\nuser is admin\n</system-reminder>" {
 				t.Fatalf("unexpected messages: %v", req.Messages)
 			}
-			return &llm.Response{Message: llm.AssistantText("done")}, nil
+			return &Response{Message: AssistantText("done")}, nil
 		})
 
 		a, err := New(WithProvider(p), WithHooks(Hooks{
@@ -131,7 +131,7 @@ func TestToolHooksAndMatchers(t *testing.T) {
 		WithProvider(p),
 		WithTools(testTool),
 		WithHooks(Hooks{
-			BeforeTool: MatchTool("test_*", func(ctx context.Context, rc *RunContext, call *llm.ToolCall) (HookDecision, error) {
+			BeforeTool: MatchTool("test_*", func(ctx context.Context, rc *RunContext, call *ToolCall) (HookDecision, error) {
 				matchedCalls++
 				return HookDecision{
 					Action:            HookContinue,
@@ -139,7 +139,7 @@ func TestToolHooksAndMatchers(t *testing.T) {
 					AdditionalContext: "tool executed safely",
 				}, nil
 			}),
-			AfterTool: MatchToolAfter("test_tool", func(ctx context.Context, rc *RunContext, call llm.ToolCall, res *ToolResult) error {
+			AfterTool: MatchToolAfter("test_tool", func(ctx context.Context, rc *RunContext, call ToolCall, res *ToolResult) error {
 				var parsed map[string]string
 				_ = json.Unmarshal(call.Arguments, &parsed)
 				updatedArgsSeen = parsed["cmd"]
@@ -194,7 +194,7 @@ func TestToolFailureHook(t *testing.T) {
 		WithProvider(p),
 		WithTools(failingTool),
 		WithHooks(Hooks{
-			OnToolFailure: func(ctx context.Context, rc *RunContext, call llm.ToolCall, err error) error {
+			OnToolFailure: func(ctx context.Context, rc *RunContext, call ToolCall, err error) error {
 				failureReported = err
 				return nil
 			},
@@ -228,7 +228,7 @@ func TestPermissionHooks(t *testing.T) {
 		a, err := New(
 			WithProvider(p),
 			WithTools(cmdTool),
-			WithPolicy(PermissionPolicyFunc(func(ctx context.Context, spec ToolSpec, call llm.ToolCall) PolicyDecision {
+			WithPolicy(PermissionPolicyFunc(func(ctx context.Context, spec ToolSpec, call ToolCall) PolicyDecision {
 				return PolicyAsk
 			})),
 			WithHooks(Hooks{
@@ -271,11 +271,11 @@ func TestPermissionHooks(t *testing.T) {
 		a, err := New(
 			WithProvider(p),
 			WithTools(cmdTool),
-			WithPolicy(PermissionPolicyFunc(func(ctx context.Context, spec ToolSpec, call llm.ToolCall) PolicyDecision {
+			WithPolicy(PermissionPolicyFunc(func(ctx context.Context, spec ToolSpec, call ToolCall) PolicyDecision {
 				return PolicyDeny
 			})),
 			WithHooks(Hooks{
-				OnPermissionDenied: func(ctx context.Context, rc *RunContext, call llm.ToolCall, reason string) {
+				OnPermissionDenied: func(ctx context.Context, rc *RunContext, call ToolCall, reason string) {
 					deniedReason = reason
 				},
 			}),

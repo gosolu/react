@@ -1,9 +1,4 @@
-// Package llm defines the provider-agnostic types used to talk to language
-// models: messages, tool calls, requests, responses, and streaming events.
-//
-// It has no dependencies on the rest of the module so that every other
-// package (and third-party providers) can import it freely.
-package llm
+package react
 
 import (
 	"encoding/json"
@@ -132,7 +127,7 @@ func SystemText(s string) Message {
 	return Message{Role: RoleSystem, Content: []Part{TextPart(s)}}
 }
 
-// ToolResult builds a tool-result message.
-func ToolResult(callID, name string, content []Part, isError bool) Message {
+// ToolResultMessage builds a tool-result message.
+func ToolResultMessage(callID, name string, content []Part, isError bool) Message {
 	return Message{Role: RoleTool, ToolCallID: callID, Name: name, Content: content, IsError: isError}
 }

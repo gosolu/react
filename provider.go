@@ -1,30 +1,20 @@
-package llm
+package react
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"iter"
 )
 
-// ToolSpec describes a tool to the model.
-type ToolSpec struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
-}
-
-// StopReason explains why the model stopped generating.
+// StopReason explains why the model or agent stopped generating.
 type StopReason string
 
 const (
-	StopEndTurn   StopReason = "end_turn"
-	StopToolUse   StopReason = "tool_use"
-	StopMaxTokens StopReason = "max_tokens"
-	// StopMaxTurns is set by the agent (not providers) when the turn limit is hit.
-	StopMaxTurns StopReason = "max_turns"
-	// StopOther covers provider-specific reasons (content filter, stop sequence, ...).
-	StopOther StopReason = "other"
+	StopEnd           StopReason = "stop"           // Model finished naturally or hit a stop sequence
+	StopToolCall      StopReason = "tool_call"      // Model requested tool or function execution
+	StopLength        StopReason = "length"         // Generation hit token limit or maximum length
+	StopContentFilter StopReason = "content_filter" // Content filter omitted or blocked generation
+	StopMaxTurns      StopReason = "max_turns"      // Agent stopped because max turn limit was reached
+	StopOther         StopReason = "other"          // Other provider-specific reason
 )
 
 // Tool choice values for Request.ToolChoice. Any other value is treated as
@@ -80,24 +70,4 @@ type Provider interface {
 	Name() string
 	Generate(ctx context.Context, req *Request) (*Response, error)
 	Stream(ctx context.Context, req *Request) iter.Seq2[StreamEvent, error]
-}
-
-// APIError is returned when a provider responds with a non-success status.
-type APIError struct {
-	Provider   string
-	StatusCode int
-	Body       string
-}
-
-func (e *APIError) Error() string {
-	body := e.Body
-	if len(body) > 500 {
-		body = body[:500] + "..."
-	}
-	return fmt.Sprintf("%s: HTTP %d: %s", e.Provider, e.StatusCode, body)
-}
-
-// Retryable reports whether the request may succeed if retried.
-func (e *APIError) Retryable() bool {
-	return e.StatusCode == 429 || e.StatusCode >= 500
 }

@@ -11,10 +11,9 @@ import (
 	"syscall"
 
 	"github.com/gosolu/react"
-	"github.com/gosolu/react/llm"
-	"github.com/gosolu/react/llm/anthropic"
-	"github.com/gosolu/react/llm/mock"
-	"github.com/gosolu/react/llm/openai"
+	"github.com/gosolu/react/provider/anthropic"
+	"github.com/gosolu/react/provider/mock"
+	"github.com/gosolu/react/provider/openai"
 	"github.com/gosolu/react/tools/builtin"
 )
 
@@ -28,7 +27,7 @@ func main() {
 	systemPromptFlag := flag.String("system", "You are a helpful and capable agent assistant equipped with system tools.", "Base system prompt")
 	flag.Parse()
 
-	var p llm.Provider
+	var p react.Provider
 	model := *modelFlag
 
 	switch strings.ToLower(*providerFlag) {

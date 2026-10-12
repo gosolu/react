@@ -1,4 +1,4 @@
-// Package anthropic implements an Anthropic Messages API llm.Provider.
+// Package anthropic implements an Anthropic Messages API react.Provider.
 package anthropic
 
 import (
@@ -12,7 +12,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gosolu/react/llm"
+	"github.com/gosolu/react"
+	"github.com/gosolu/react/provider"
 )
 
 // DefaultBaseURL is Anthropic's official API base URL.
@@ -27,11 +28,11 @@ type Config struct {
 	BaseURL     string       // defaults to DefaultBaseURL
 	Version     string       // defaults to DefaultVersion
 	HTTPClient  *http.Client // defaults to http.DefaultClient
-	RetryPolicy llm.RetryPolicy
+	RetryPolicy provider.RetryPolicy
 	ExtraHeader map[string]string
 }
 
-// Provider implements llm.Provider for the Anthropic Messages API.
+// Provider implements react.Provider for the Anthropic Messages API.
 type Provider struct {
 	cfg Config
 }
@@ -48,13 +49,13 @@ func New(cfg Config) *Provider {
 	return &Provider{cfg: cfg}
 }
 
-// Name implements llm.Provider.
+// Name implements react.Provider.
 func (p *Provider) Name() string {
 	return "anthropic"
 }
 
-// Generate implements llm.Provider (non-streaming).
-func (p *Provider) Generate(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+// Generate implements react.Provider (non-streaming).
+func (p *Provider) Generate(ctx context.Context, req *react.Request) (*react.Response, error) {
 	bodyMap := p.buildRequestBody(req, false)
 	data, err := json.Marshal(bodyMap)
 	if err != nil {
@@ -79,15 +80,15 @@ func (p *Provider) Generate(ctx context.Context, req *llm.Request) (*llm.Respons
 		return nil, fmt.Errorf("anthropic: decode response: %w", err)
 	}
 
-	msg := llm.Message{
-		Role: llm.RoleAssistant,
+	msg := react.Message{
+		Role: react.RoleAssistant,
 	}
 	for _, block := range msgResp.Content {
 		switch block.Type {
 		case "text":
-			msg.Content = append(msg.Content, llm.TextPart(block.Text))
+			msg.Content = append(msg.Content, react.TextPart(block.Text))
 		case "tool_use":
-			msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{
+			msg.ToolCalls = append(msg.ToolCalls, react.ToolCall{
 				ID:        block.ID,
 				Name:      block.Name,
 				Arguments: block.Input,
@@ -95,23 +96,23 @@ func (p *Provider) Generate(ctx context.Context, req *llm.Request) (*llm.Respons
 		}
 	}
 
-	return &llm.Response{
+	return &react.Response{
 		Message:    msg,
 		StopReason: mapStopReason(msgResp.StopReason),
-		Usage: llm.Usage{
+		Usage: react.Usage{
 			InputTokens:  msgResp.Usage.InputTokens,
 			OutputTokens: msgResp.Usage.OutputTokens,
 		},
 	}, nil
 }
 
-// Stream implements llm.Provider (server-sent events).
-func (p *Provider) Stream(ctx context.Context, req *llm.Request) iter.Seq2[llm.StreamEvent, error] {
-	return func(yield func(llm.StreamEvent, error) bool) {
+// Stream implements react.Provider (server-sent events).
+func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[react.StreamEvent, error] {
+	return func(yield func(react.StreamEvent, error) bool) {
 		bodyMap := p.buildRequestBody(req, true)
 		data, err := json.Marshal(bodyMap)
 		if err != nil {
-			yield(llm.StreamEvent{}, fmt.Errorf("anthropic: marshal request: %w", err))
+			yield(react.StreamEvent{}, fmt.Errorf("anthropic: marshal request: %w", err))
 			return
 		}
 
@@ -125,17 +126,17 @@ func (p *Provider) Stream(ctx context.Context, req *llm.Request) iter.Seq2[llm.S
 			return httpReq, nil
 		})
 		if err != nil {
-			yield(llm.StreamEvent{}, err)
+			yield(react.StreamEvent{}, err)
 			return
 		}
 		defer resp.Body.Close()
 
-		var currentUsage llm.Usage
+		var currentUsage react.Usage
 
-		for sse, err := range llm.ReadSSE(resp.Body) {
+		for sse, err := range provider.ReadSSE(resp.Body) {
 			if err != nil {
 				if err != io.EOF && ctx.Err() == nil {
-					yield(llm.StreamEvent{}, err)
+					yield(react.StreamEvent{}, err)
 				}
 				return
 			}
@@ -145,7 +146,7 @@ func (p *Provider) Stream(ctx context.Context, req *llm.Request) iter.Seq2[llm.S
 				if json.Unmarshal([]byte(sse.Data), &start) == nil {
 					currentUsage.InputTokens = start.Message.Usage.InputTokens
 					currentUsage.OutputTokens = start.Message.Usage.OutputTokens
-					if !yield(llm.StreamEvent{Type: llm.StreamUsage, Usage: &currentUsage}, nil) {
+					if !yield(react.StreamEvent{Type: react.StreamUsage, Usage: &currentUsage}, nil) {
 						return
 					}
 				}
@@ -153,8 +154,8 @@ func (p *Provider) Stream(ctx context.Context, req *llm.Request) iter.Seq2[llm.S
 				var blockStart contentBlockStartEvent
 				if json.Unmarshal([]byte(sse.Data), &blockStart) == nil {
 					if blockStart.ContentBlock.Type == "tool_use" {
-						if !yield(llm.StreamEvent{
-							Type:       llm.StreamToolCallStart,
+						if !yield(react.StreamEvent{
+							Type:       react.StreamToolCallStart,
 							Index:      blockStart.Index,
 							ToolCallID: blockStart.ContentBlock.ID,
 							ToolName:   blockStart.ContentBlock.Name,
@@ -168,11 +169,11 @@ func (p *Provider) Stream(ctx context.Context, req *llm.Request) iter.Seq2[llm.S
 				if json.Unmarshal([]byte(sse.Data), &delta) == nil {
 					switch delta.Delta.Type {
 					case "text_delta":
-						if !yield(llm.StreamEvent{Type: llm.StreamTextDelta, Text: delta.Delta.Text}, nil) {
+						if !yield(react.StreamEvent{Type: react.StreamTextDelta, Text: delta.Delta.Text}, nil) {
 							return
 						}
 					case "input_json_delta":
-						if !yield(llm.StreamEvent{Type: llm.StreamToolCallDelta, Index: delta.Index, ArgsDelta: delta.Delta.PartialJSON}, nil) {
+						if !yield(react.StreamEvent{Type: react.StreamToolCallDelta, Index: delta.Index, ArgsDelta: delta.Delta.PartialJSON}, nil) {
 							return
 						}
 					}
@@ -181,12 +182,12 @@ func (p *Provider) Stream(ctx context.Context, req *llm.Request) iter.Seq2[llm.S
 				var msgDelta messageDeltaEvent
 				if json.Unmarshal([]byte(sse.Data), &msgDelta) == nil {
 					currentUsage.OutputTokens = msgDelta.Usage.OutputTokens
-					if !yield(llm.StreamEvent{Type: llm.StreamUsage, Usage: &currentUsage}, nil) {
+					if !yield(react.StreamEvent{Type: react.StreamUsage, Usage: &currentUsage}, nil) {
 						return
 					}
 					if msgDelta.Delta.StopReason != "" {
-						if !yield(llm.StreamEvent{
-							Type:       llm.StreamDone,
+						if !yield(react.StreamEvent{
+							Type:       react.StreamDone,
 							StopReason: mapStopReason(msgDelta.Delta.StopReason),
 						}, nil) {
 							return
@@ -211,7 +212,7 @@ func (p *Provider) setHeaders(req *http.Request) {
 	}
 }
 
-func (p *Provider) buildRequestBody(req *llm.Request, stream bool) map[string]any {
+func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]any {
 	body := make(map[string]any)
 	for k, v := range req.Extra {
 		body[k] = v
@@ -238,18 +239,18 @@ func (p *Provider) buildRequestBody(req *llm.Request, stream bool) map[string]an
 
 	var messages []map[string]any
 	for _, m := range req.Messages {
-		if m.Role == llm.RoleSystem {
+		if m.Role == react.RoleSystem {
 			systemParts = append(systemParts, m.Text())
 			continue
 		}
 
 		switch m.Role {
-		case llm.RoleUser:
+		case react.RoleUser:
 			var content []map[string]any
 			for _, part := range m.Content {
-				if part.Type == llm.PartText {
+				if part.Type == react.PartText {
 					content = append(content, map[string]any{"type": "text", "text": part.Text})
-				} else if part.Type == llm.PartImage {
+				} else if part.Type == react.PartImage {
 					mediaType := part.MIMEType
 					if mediaType == "" {
 						mediaType = "image/jpeg"
@@ -272,10 +273,10 @@ func (p *Provider) buildRequestBody(req *llm.Request, stream bool) map[string]an
 				"role":    "user",
 				"content": content,
 			})
-		case llm.RoleAssistant:
+		case react.RoleAssistant:
 			var content []map[string]any
 			for _, part := range m.Content {
-				if part.Type == llm.PartText && part.Text != "" {
+				if part.Type == react.PartText && part.Text != "" {
 					content = append(content, map[string]any{"type": "text", "text": part.Text})
 				}
 			}
@@ -295,7 +296,7 @@ func (p *Provider) buildRequestBody(req *llm.Request, stream bool) map[string]an
 				"role":    "assistant",
 				"content": content,
 			})
-		case llm.RoleTool:
+		case react.RoleTool:
 			// In Anthropic, tool results go into a "user" turn with type="tool_result"
 			resContent := map[string]any{
 				"type":        "tool_result",
@@ -331,11 +332,11 @@ func (p *Provider) buildRequestBody(req *llm.Request, stream bool) map[string]an
 
 		if req.ToolChoice != "" {
 			switch req.ToolChoice {
-			case llm.ToolChoiceAuto:
+			case react.ToolChoiceAuto:
 				body["tool_choice"] = map[string]string{"type": "auto"}
-			case llm.ToolChoiceRequired:
+			case react.ToolChoiceRequired:
 				body["tool_choice"] = map[string]string{"type": "any"}
-			case llm.ToolChoiceNone:
+			case react.ToolChoiceNone:
 				// no tool choice
 			default:
 				body["tool_choice"] = map[string]string{
@@ -349,16 +350,16 @@ func (p *Provider) buildRequestBody(req *llm.Request, stream bool) map[string]an
 	return body
 }
 
-func mapStopReason(r string) llm.StopReason {
+func mapStopReason(r string) react.StopReason {
 	switch r {
 	case "end_turn", "stop_sequence":
-		return llm.StopEndTurn
+		return react.StopEnd
 	case "tool_use":
-		return llm.StopToolUse
+		return react.StopToolCall
 	case "max_tokens":
-		return llm.StopMaxTokens
+		return react.StopLength
 	default:
-		return llm.StopOther
+		return react.StopOther
 	}
 }
 

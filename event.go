@@ -1,9 +1,5 @@
 package react
 
-import (
-	"github.com/gosolu/react/llm"
-)
-
 // EventType identifies an Event.
 type EventType string
 
@@ -33,15 +29,15 @@ type Event struct {
 
 	Text string // TextDelta, ReasoningDelta, ToolCallDelta (args fragment)
 
-	ToolCall   *llm.ToolCall // ToolCallStart, ToolCallReady, ApprovalRequested, ToolResult
-	ToolIndex  int           // index of the call within the turn
+	ToolCall   *ToolCall        // ToolCallStart, ToolCallReady, ApprovalRequested, ToolResult
+	ToolIndex  int              // index of the call within the turn
 	ToolResult *ToolResult      // ToolResult
 	Approval   *ApprovalRequest // ApprovalRequested
 
-	Message *llm.Message // MessageComplete
-	Usage   *llm.Usage   // MessageComplete (per call), RunEnd (aggregate)
-	Result  *Result      // RunEnd
-	Err     error        // Error
+	Message *Message // MessageComplete
+	Usage   *Usage   // MessageComplete (per call), RunEnd (aggregate)
+	Result  *Result  // RunEnd
+	Err     error    // Error
 }
 
 // Result summarises a completed run.
@@ -49,8 +45,8 @@ type Result struct {
 	// Output is the final assistant text.
 	Output string
 	// Messages are all messages produced in this run, starting with the user input.
-	Messages   []llm.Message
-	Usage      llm.Usage
+	Messages   []Message
+	Usage      Usage
 	Turns      int
-	StopReason llm.StopReason
+	StopReason StopReason
 }

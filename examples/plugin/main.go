@@ -6,8 +6,7 @@ import (
 	"log"
 
 	"github.com/gosolu/react"
-	"github.com/gosolu/react/llm"
-	"github.com/gosolu/react/llm/mock"
+	"github.com/gosolu/react/provider/mock"
 )
 
 // AnalyticsPlugin is an in-process plugin registering tools, hooks, and skill sources.
@@ -26,7 +25,7 @@ func (p *AnalyticsPlugin) Init(ctx context.Context, r react.Registrar) error {
 
 	// Register lifecycle hook
 	r.AddHooks(react.Hooks{
-		BeforeTool: func(ctx context.Context, rc *react.RunContext, call *llm.ToolCall) (react.HookDecision, error) {
+		BeforeTool: func(ctx context.Context, rc *react.RunContext, call *react.ToolCall) (react.HookDecision, error) {
 			fmt.Printf("[Plugin Hook] Preparing to run tool: %s\n", call.Name)
 			return react.HookDecision{Action: react.HookContinue}, nil
 		},

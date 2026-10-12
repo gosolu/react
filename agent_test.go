@@ -1,4 +1,4 @@
-package react
+package react_test
 
 import (
 	"context"
@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gosolu/react/llm"
-	"github.com/gosolu/react/llm/mock"
+	. "github.com/gosolu/react"
+	"github.com/gosolu/react/provider/mock"
 )
 
 type calcArgs struct {
@@ -100,13 +100,13 @@ func TestAgentStreamAndRunParity(t *testing.T) {
 
 func TestAgentMaxTurns(t *testing.T) {
 	// Infinitely loop tool calls
-	p := mock.NewFunc(func(ctx context.Context, req *llm.Request) (*llm.Response, error) {
-		return &llm.Response{
-			Message: llm.Message{
-				Role:      llm.RoleAssistant,
-				ToolCalls: []llm.ToolCall{mock.Call("loop", `{}`)},
+	p := mock.NewFunc(func(ctx context.Context, req *Request) (*Response, error) {
+		return &Response{
+			Message: Message{
+				Role:      RoleAssistant,
+				ToolCalls: []ToolCall{mock.Call("loop", `{}`)},
 			},
-			StopReason: llm.StopToolUse,
+			StopReason: StopToolCall,
 		}, nil
 	})
 

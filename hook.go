@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gosolu/react/llm"
 )
 
 // RunContext describes the current agent run. Fields are set by the agent;
@@ -140,18 +139,18 @@ type Hooks struct {
 	OnStopFailure func(ctx context.Context, rc *RunContext, err error)
 
 	// Model lifecycle
-	BeforeModel func(ctx context.Context, rc *RunContext, req *llm.Request) error
-	AfterModel  func(ctx context.Context, rc *RunContext, resp *llm.Response) error
+	BeforeModel func(ctx context.Context, rc *RunContext, req *Request) error
+	AfterModel  func(ctx context.Context, rc *RunContext, resp *Response) error
 
 	// Tool lifecycle
-	BeforeTool     func(ctx context.Context, rc *RunContext, call *llm.ToolCall) (HookDecision, error)
-	AfterTool      func(ctx context.Context, rc *RunContext, call llm.ToolCall, res *ToolResult) error
-	OnToolFailure  func(ctx context.Context, rc *RunContext, call llm.ToolCall, err error) error
+	BeforeTool     func(ctx context.Context, rc *RunContext, call *ToolCall) (HookDecision, error)
+	AfterTool      func(ctx context.Context, rc *RunContext, call ToolCall, res *ToolResult) error
+	OnToolFailure  func(ctx context.Context, rc *RunContext, call ToolCall, err error) error
 	AfterToolBatch func(ctx context.Context, rc *RunContext, results []ToolCallResult) error
 
 	// Permission lifecycle
 	OnPermissionRequest func(ctx context.Context, rc *RunContext, req ApprovalRequest) (HookApprovalDecision, error)
-	OnPermissionDenied  func(ctx context.Context, rc *RunContext, call llm.ToolCall, reason string)
+	OnPermissionDenied  func(ctx context.Context, rc *RunContext, call ToolCall, reason string)
 
 	// Subagent lifecycle
 	SubagentStart func(ctx context.Context, rc *RunContext, agentName string, task string)
@@ -243,7 +242,7 @@ func (c HookChain) StopFailure(ctx context.Context, rc *RunContext, err error) {
 }
 
 // BeforeModel runs all BeforeModel hooks in order.
-func (c HookChain) BeforeModel(ctx context.Context, rc *RunContext, req *llm.Request) error {
+func (c HookChain) BeforeModel(ctx context.Context, rc *RunContext, req *Request) error {
 	for _, h := range c {
 		if h.BeforeModel != nil {
 			if err := h.BeforeModel(ctx, rc, req); err != nil {
@@ -255,7 +254,7 @@ func (c HookChain) BeforeModel(ctx context.Context, rc *RunContext, req *llm.Req
 }
 
 // AfterModel runs all AfterModel hooks in order.
-func (c HookChain) AfterModel(ctx context.Context, rc *RunContext, resp *llm.Response) error {
+func (c HookChain) AfterModel(ctx context.Context, rc *RunContext, resp *Response) error {
 	for _, h := range c {
 		if h.AfterModel != nil {
 			if err := h.AfterModel(ctx, rc, resp); err != nil {
@@ -268,7 +267,7 @@ func (c HookChain) AfterModel(ctx context.Context, rc *RunContext, resp *llm.Res
 
 // BeforeTool runs all BeforeTool hooks in order. Intermediate hooks may update
 // arguments or queue additional context. Returns the first non-HookContinue decision.
-func (c HookChain) BeforeTool(ctx context.Context, rc *RunContext, call *llm.ToolCall) (HookDecision, error) {
+func (c HookChain) BeforeTool(ctx context.Context, rc *RunContext, call *ToolCall) (HookDecision, error) {
 	for _, h := range c {
 		if h.BeforeTool != nil {
 			d, err := h.BeforeTool(ctx, rc, call)
@@ -290,7 +289,7 @@ func (c HookChain) BeforeTool(ctx context.Context, rc *RunContext, call *llm.Too
 }
 
 // AfterTool runs all AfterTool hooks in order.
-func (c HookChain) AfterTool(ctx context.Context, rc *RunContext, call llm.ToolCall, res *ToolResult) error {
+func (c HookChain) AfterTool(ctx context.Context, rc *RunContext, call ToolCall, res *ToolResult) error {
 	for _, h := range c {
 		if h.AfterTool != nil {
 			if err := h.AfterTool(ctx, rc, call, res); err != nil {
@@ -302,7 +301,7 @@ func (c HookChain) AfterTool(ctx context.Context, rc *RunContext, call llm.ToolC
 }
 
 // ToolFailure runs all OnToolFailure hooks in order.
-func (c HookChain) ToolFailure(ctx context.Context, rc *RunContext, call llm.ToolCall, err error) error {
+func (c HookChain) ToolFailure(ctx context.Context, rc *RunContext, call ToolCall, err error) error {
 	for _, h := range c {
 		if h.OnToolFailure != nil {
 			if ferr := h.OnToolFailure(ctx, rc, call, err); ferr != nil {
@@ -342,7 +341,7 @@ func (c HookChain) PermissionRequest(ctx context.Context, rc *RunContext, req Ap
 }
 
 // PermissionDenied runs all OnPermissionDenied hooks in order.
-func (c HookChain) PermissionDenied(ctx context.Context, rc *RunContext, call llm.ToolCall, reason string) {
+func (c HookChain) PermissionDenied(ctx context.Context, rc *RunContext, call ToolCall, reason string) {
 	for _, h := range c {
 		if h.OnPermissionDenied != nil {
 			h.OnPermissionDenied(ctx, rc, call, reason)
@@ -397,8 +396,8 @@ func (c HookChain) Event(ctx context.Context, ev Event) {
 
 // MatchTool creates a BeforeTool hook filter that only executes fn if the tool name
 // matches the given pattern (exact name or glob pattern like "mcp__*").
-func MatchTool(pattern string, fn func(ctx context.Context, rc *RunContext, call *llm.ToolCall) (HookDecision, error)) func(ctx context.Context, rc *RunContext, call *llm.ToolCall) (HookDecision, error) {
-	return func(ctx context.Context, rc *RunContext, call *llm.ToolCall) (HookDecision, error) {
+func MatchTool(pattern string, fn func(ctx context.Context, rc *RunContext, call *ToolCall) (HookDecision, error)) func(ctx context.Context, rc *RunContext, call *ToolCall) (HookDecision, error) {
+	return func(ctx context.Context, rc *RunContext, call *ToolCall) (HookDecision, error) {
 		if matchToolPattern(pattern, call.Name) {
 			return fn(ctx, rc, call)
 		}
@@ -408,8 +407,8 @@ func MatchTool(pattern string, fn func(ctx context.Context, rc *RunContext, call
 
 // MatchToolAfter creates an AfterTool hook filter that only executes fn if the tool name
 // matches the given pattern.
-func MatchToolAfter(pattern string, fn func(ctx context.Context, rc *RunContext, call llm.ToolCall, res *ToolResult) error) func(ctx context.Context, rc *RunContext, call llm.ToolCall, res *ToolResult) error {
-	return func(ctx context.Context, rc *RunContext, call llm.ToolCall, res *ToolResult) error {
+func MatchToolAfter(pattern string, fn func(ctx context.Context, rc *RunContext, call ToolCall, res *ToolResult) error) func(ctx context.Context, rc *RunContext, call ToolCall, res *ToolResult) error {
+	return func(ctx context.Context, rc *RunContext, call ToolCall, res *ToolResult) error {
 		if matchToolPattern(pattern, call.Name) {
 			return fn(ctx, rc, call, res)
 		}

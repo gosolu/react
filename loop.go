@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gosolu/react/llm"
 )
 
 type emitFunc func(Event) bool
@@ -76,23 +75,23 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 	}
 
 	// Load history.
-	var history []llm.Message
+	var history []Message
 	if sessionID != "" {
 		if history, err = a.cfg.store.Load(ctx, sessionID); err != nil {
 			return nil, fmt.Errorf("agent: load session: %w", err)
 		}
 	} else {
-		history = llm.CloneMessages(rcfg.history)
+		history = CloneMessages(rcfg.history)
 	}
-	user := llm.Message{Role: llm.RoleUser}
+	user := Message{Role: RoleUser}
 	if input != "" {
-		user.Content = append(user.Content, llm.TextPart(input))
+		user.Content = append(user.Content, TextPart(input))
 	}
 	user.Content = append(user.Content, rcfg.parts...)
 	history = append(history, user)
 
-	result = &Result{Messages: []llm.Message{user}}
-	pending := []llm.Message{user}
+	result = &Result{Messages: []Message{user}}
+	pending := []Message{user}
 	// flush persists completed turns. It uses a non-cancellable context so a
 	// finished turn is saved even if the run is cancelled right after.
 	flush := func() error {
@@ -110,16 +109,13 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 	if rcfg.model != "" {
 		model = rcfg.model
 	}
-	var specs []llm.ToolSpec
-	for _, s := range a.registry.Specs() {
-		specs = append(specs, s.LLM())
-	}
+	specs := a.registry.Specs()
 
 	emit(Event{Type: EventRunStart})
 
 	for turn := 1; ; turn++ {
 		if turn > a.cfg.maxTurns {
-			result.StopReason = llm.StopMaxTurns
+			result.StopReason = StopMaxTurns
 			err = ErrMaxTurns
 			break
 		}
@@ -142,9 +138,9 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 				b.WriteString("\n")
 			}
 			b.WriteString("</system-reminder>")
-			msgs = append(msgs, llm.UserText(b.String()))
+			msgs = append(msgs, UserText(b.String()))
 		}
-		req := &llm.Request{
+		req := &Request{
 			Model:       model,
 			System:      a.system,
 			Messages:    msgs,
@@ -154,7 +150,7 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 		}
 		// A forced tool choice applies to the first turn only, otherwise the
 		// model could never produce a final answer.
-		if rcfg.toolChoice != "" && (turn == 1 || rcfg.toolChoice == llm.ToolChoiceNone || rcfg.toolChoice == llm.ToolChoiceAuto) {
+		if rcfg.toolChoice != "" && (turn == 1 || rcfg.toolChoice == ToolChoiceNone || rcfg.toolChoice == ToolChoiceAuto) {
 			req.ToolChoice = rcfg.toolChoice
 		}
 		if err := a.hooks.BeforeModel(ctx, rc, req); err != nil {
@@ -170,7 +166,7 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 		}
 
 		msg := resp.Message
-		msg.Role = llm.RoleAssistant
+		msg.Role = RoleAssistant
 		for i := range msg.ToolCalls {
 			if msg.ToolCalls[i].ID == "" {
 				msg.ToolCalls[i].ID = fmt.Sprintf("call_%s_%d_%d", rc.RunID[:8], turn, i)
@@ -198,7 +194,7 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 				if feedback == "" {
 					feedback = "Please continue working."
 				}
-				feedbackMsg := llm.UserText(fmt.Sprintf("<system-reminder>\n%s\n</system-reminder>", feedback))
+				feedbackMsg := UserText(fmt.Sprintf("<system-reminder>\n%s\n</system-reminder>", feedback))
 				history = append(history, feedbackMsg)
 				pending = append(pending, feedbackMsg)
 				result.Messages = append(result.Messages, feedbackMsg)
@@ -243,24 +239,24 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 // callModel performs one model call in the requested mode. In stream mode
 // deltas are emitted as they arrive and accumulated into a Response, so both
 // modes produce the same Response shape.
-func (a *Agent) callModel(ctx context.Context, req *llm.Request, stream bool, emit emitFunc) (*llm.Response, error) {
+func (a *Agent) callModel(ctx context.Context, req *Request, stream bool, emit emitFunc) (*Response, error) {
 	if !stream {
 		return a.cfg.provider.Generate(ctx, req)
 	}
-	var acc llm.Accumulator
+	var acc Accumulator
 	for ev, err := range a.cfg.provider.Stream(ctx, req) {
 		if err != nil {
 			return nil, err
 		}
 		acc.Add(ev)
 		switch ev.Type {
-		case llm.StreamTextDelta:
+		case StreamTextDelta:
 			emit(Event{Type: EventTextDelta, Text: ev.Text})
-		case llm.StreamReasoningDelta:
+		case StreamReasoningDelta:
 			emit(Event{Type: EventReasoningDelta, Text: ev.Text})
-		case llm.StreamToolCallStart:
-			emit(Event{Type: EventToolCallStart, ToolIndex: ev.Index, ToolCall: &llm.ToolCall{ID: ev.ToolCallID, Name: ev.ToolName}})
-		case llm.StreamToolCallDelta:
+		case StreamToolCallStart:
+			emit(Event{Type: EventToolCallStart, ToolIndex: ev.Index, ToolCall: &ToolCall{ID: ev.ToolCallID, Name: ev.ToolName}})
+		case StreamToolCallDelta:
 			emit(Event{Type: EventToolCallDelta, ToolIndex: ev.Index, Text: ev.ArgsDelta})
 		}
 	}
@@ -272,18 +268,18 @@ func (a *Agent) callModel(ctx context.Context, req *llm.Request, stream bool, em
 
 // runTools executes a batch of tool calls and returns tool-result messages in
 // call order.
-func (a *Agent) runTools(ctx context.Context, rc *RunContext, calls []llm.ToolCall, emit emitFunc) []llm.Message {
+func (a *Agent) runTools(ctx context.Context, rc *RunContext, calls []ToolCall, emit emitFunc) []Message {
 	mws := a.middleware
 	if a.cfg.toolTimeout > 0 {
 		// Innermost, so approval waits do not count against the tool timeout.
 		mws = append(append([]ToolMiddleware(nil), mws...), TimeoutMiddleware(a.cfg.toolTimeout))
 	}
-	exec := ChainToolMiddleware(func(ctx context.Context, call llm.ToolCall) (ToolResult, error) {
+	exec := ChainToolMiddleware(func(ctx context.Context, call ToolCall) (ToolResult, error) {
 		t, _ := a.registry.Get(call.Name)
 		return t.Call(ctx, call.Arguments)
 	}, mws...)
 
-	pipeline := func(ctx context.Context, call llm.ToolCall) (ToolResult, error) {
+	pipeline := func(ctx context.Context, call ToolCall) (ToolResult, error) {
 		return a.handleCall(ctx, rc, call, exec, emit)
 	}
 	isSeq := func(name string) bool {
@@ -296,13 +292,13 @@ func (a *Agent) runTools(ctx context.Context, rc *RunContext, calls []llm.ToolCa
 		emit(Event{Type: EventToolResult, ToolCall: &call, ToolIndex: i, ToolResult: &res})
 	})
 
-	msgs := make([]llm.Message, len(results))
+	msgs := make([]Message, len(results))
 	for i, cr := range results {
 		content := cr.Result.Content
 		if len(content) == 0 {
-			content = []llm.Part{llm.TextPart("(no output)")}
+			content = []Part{TextPart("(no output)")}
 		}
-		msgs[i] = llm.ToolResult(cr.Call.ID, cr.Call.Name, content, cr.Result.IsError)
+		msgs[i] = ToolResultMessage(cr.Call.ID, cr.Call.Name, content, cr.Result.IsError)
 	}
 	if berr := a.hooks.AfterToolBatch(ctx, rc, results); berr != nil {
 		// Return batch error if any
@@ -312,7 +308,7 @@ func (a *Agent) runTools(ctx context.Context, rc *RunContext, calls []llm.ToolCa
 
 // handleCall applies validation, permission policy, hooks and middleware to a
 // single call.
-func (a *Agent) handleCall(ctx context.Context, rc *RunContext, call llm.ToolCall, exec ToolHandler, emit emitFunc) (ToolResult, error) {
+func (a *Agent) handleCall(ctx context.Context, rc *RunContext, call ToolCall, exec ToolHandler, emit emitFunc) (ToolResult, error) {
 	t, ok := a.registry.Get(call.Name)
 	if !ok {
 		var names []string
@@ -383,7 +379,7 @@ func (a *Agent) handleCall(ctx context.Context, rc *RunContext, call llm.ToolCal
 	return res, nil
 }
 
-func (a *Agent) askApproval(ctx context.Context, spec ToolSpec, call llm.ToolCall, emit emitFunc) (bool, error) {
+func (a *Agent) askApproval(ctx context.Context, spec ToolSpec, call ToolCall, emit emitFunc) (bool, error) {
 	req := ApprovalRequest{AgentName: a.cfg.name, Spec: spec, Call: call}
 	emit(Event{Type: EventApprovalRequested, ToolCall: &call, Approval: &req})
 	if a.cfg.approver == nil {
@@ -403,7 +399,7 @@ func errorResult(err error, partial ToolResult) ToolResult {
 		msg = "tool call timed out"
 	}
 	partial.IsError = true
-	partial.Content = append([]llm.Part{llm.TextPart("Error: " + msg)}, partial.Content...)
+	partial.Content = append([]Part{TextPart("Error: " + msg)}, partial.Content...)
 	return partial
 }
 

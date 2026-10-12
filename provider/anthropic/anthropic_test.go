@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gosolu/react/llm"
-	"github.com/gosolu/react/llm/anthropic"
+	"github.com/gosolu/react"
+	"github.com/gosolu/react/provider/anthropic"
 )
 
 func TestAnthropicGenerate(t *testing.T) {
@@ -43,9 +43,9 @@ func TestAnthropicGenerate(t *testing.T) {
 		BaseURL: ts.URL,
 	})
 
-	resp, err := p.Generate(context.Background(), &llm.Request{
+	resp, err := p.Generate(context.Background(), &react.Request{
 		Model:    "claude-3-5-sonnet-20241022",
-		Messages: []llm.Message{llm.UserText("weather in Paris?")},
+		Messages: []react.Message{react.UserText("weather in Paris?")},
 	})
 	if err != nil {
 		t.Fatalf("Generate failed: %v", err)
@@ -56,7 +56,7 @@ func TestAnthropicGenerate(t *testing.T) {
 	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].Name != "weather" {
 		t.Fatalf("unexpected tool calls: %+v", resp.Message.ToolCalls)
 	}
-	if resp.StopReason != llm.StopToolUse {
+	if resp.StopReason != react.StopToolCall {
 		t.Fatalf("stop reason = %v", resp.StopReason)
 	}
 	if resp.Usage.InputTokens != 15 || resp.Usage.OutputTokens != 8 {
@@ -98,8 +98,8 @@ data: {"type":"message_stop"}
 		BaseURL: ts.URL,
 	})
 
-	var acc llm.Accumulator
-	for ev, err := range p.Stream(context.Background(), &llm.Request{Model: "claude-3-5-sonnet"}) {
+	var acc react.Accumulator
+	for ev, err := range p.Stream(context.Background(), &react.Request{Model: "claude-3-5-sonnet"}) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -116,7 +116,7 @@ data: {"type":"message_stop"}
 	if !strings.Contains(string(resp.Message.ToolCalls[0].Arguments), `"msg":"hi"`) {
 		t.Fatalf("args = %s", string(resp.Message.ToolCalls[0].Arguments))
 	}
-	if resp.StopReason != llm.StopToolUse {
+	if resp.StopReason != react.StopToolCall {
 		t.Fatalf("stop = %v", resp.StopReason)
 	}
 	if resp.Usage.InputTokens != 20 || resp.Usage.OutputTokens != 12 {

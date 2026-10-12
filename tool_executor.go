@@ -8,12 +8,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gosolu/react/llm"
 )
 
 // ToolCallResult is the outcome of executing one call.
 type ToolCallResult struct {
-	Call     llm.ToolCall
+	Call     ToolCall
 	Result   ToolResult
 	Err      error // original error, if any (already reflected in Result)
 	Duration time.Duration
@@ -34,7 +33,7 @@ type ToolExecutor struct {
 // ToolHandler errors, panics and timeouts are converted into error Results so the
 // model can react to them. onDone (optional) is invoked once per call as it
 // completes; calls to onDone are serialized.
-func (e ToolExecutor) Run(ctx context.Context, calls []llm.ToolCall, isSequential func(name string) bool, h ToolHandler, onDone func(i int, cr ToolCallResult)) []ToolCallResult {
+func (e ToolExecutor) Run(ctx context.Context, calls []ToolCall, isSequential func(name string) bool, h ToolHandler, onDone func(i int, cr ToolCallResult)) []ToolCallResult {
 	results := make([]ToolCallResult, len(calls))
 	maxPar := e.MaxParallel
 	if maxPar <= 0 {
@@ -72,7 +71,7 @@ func (e ToolExecutor) Run(ctx context.Context, calls []llm.ToolCall, isSequentia
 	return results
 }
 
-func (e ToolExecutor) exec(ctx context.Context, call llm.ToolCall, h ToolHandler) (cr ToolCallResult) {
+func (e ToolExecutor) exec(ctx context.Context, call ToolCall, h ToolHandler) (cr ToolCallResult) {
 	start := time.Now()
 	cr.Call = call
 	defer func() {
@@ -95,7 +94,7 @@ func (e ToolExecutor) exec(ctx context.Context, call llm.ToolCall, h ToolHandler
 			msg = "tool call timed out"
 		}
 		res.IsError = true
-		res.Content = append([]llm.Part{llm.TextPart("Error: " + msg)}, res.Content...)
+		res.Content = append([]Part{TextPart("Error: " + msg)}, res.Content...)
 	}
 	cr.Result = res
 	return cr

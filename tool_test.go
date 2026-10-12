@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gosolu/react/llm"
 )
 
 type nested struct {
@@ -94,7 +93,7 @@ func TestRegistry(t *testing.T) {
 
 func TestExecutorParallelOrderAndErrors(t *testing.T) {
 	var running, peak atomic.Int32
-	h := func(ctx context.Context, c llm.ToolCall) (ToolResult, error) {
+	h := func(ctx context.Context, c ToolCall) (ToolResult, error) {
 		n := running.Add(1)
 		defer running.Add(-1)
 		for {
@@ -122,7 +121,7 @@ func TestExecutorParallelOrderAndErrors(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		return TextResult(c.ID), nil
 	}
-	calls := []llm.ToolCall{{ID: "1", Name: "ok"}, {ID: "2", Name: "ok"}, {ID: "3", Name: "panic"}, {ID: "4", Name: "fail"}, {ID: "5", Name: "seq"}, {ID: "6", Name: "slow"}}
+	calls := []ToolCall{{ID: "1", Name: "ok"}, {ID: "2", Name: "ok"}, {ID: "3", Name: "panic"}, {ID: "4", Name: "fail"}, {ID: "5", Name: "seq"}, {ID: "6", Name: "slow"}}
 	ex := ToolExecutor{MaxParallel: 4, Timeout: 200 * time.Millisecond}
 	var done atomic.Int32
 	start := time.Now()

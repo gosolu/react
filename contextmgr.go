@@ -6,7 +6,6 @@ import (
 	"context"
 	"slices"
 
-	"github.com/gosolu/react/llm"
 )
 
 // ContextManager trims or compacts messages so that system+messages fit within
@@ -14,20 +13,20 @@ import (
 // split an assistant tool-call message from its tool results and must not
 // mutate the input slice.
 type ContextManager interface {
-	Fit(ctx context.Context, system string, msgs []llm.Message, budget int) ([]llm.Message, error)
+	Fit(ctx context.Context, system string, msgs []Message, budget int) ([]Message, error)
 }
 
 // TokenEstimator estimates the token count of a message.
-type TokenEstimator func(llm.Message) int
+type TokenEstimator func(Message) int
 
 // EstimateTokens is a cheap heuristic (~4 bytes per token plus overhead).
-func EstimateTokens(m llm.Message) int {
+func EstimateTokens(m Message) int {
 	n := 4
 	for _, p := range m.Content {
 		switch p.Type {
-		case llm.PartText:
+		case PartText:
 			n += len(p.Text) / 4
-		case llm.PartImage:
+		case PartImage:
 			n += 1000
 		}
 	}
@@ -50,12 +49,12 @@ func estimator(e TokenEstimator) TokenEstimator {
 // unit is a span [start, end) of messages that must be kept or dropped together.
 type unit struct{ start, end, tokens int }
 
-func splitUnits(msgs []llm.Message, est TokenEstimator) []unit {
+func splitUnits(msgs []Message, est TokenEstimator) []unit {
 	var us []unit
 	for i := 0; i < len(msgs); {
 		j := i + 1
-		if msgs[i].Role == llm.RoleAssistant && len(msgs[i].ToolCalls) > 0 {
-			for j < len(msgs) && msgs[j].Role == llm.RoleTool {
+		if msgs[i].Role == RoleAssistant && len(msgs[i].ToolCalls) > 0 {
+			for j < len(msgs) && msgs[j].Role == RoleTool {
 				j++
 			}
 		}
@@ -70,9 +69,9 @@ func splitUnits(msgs []llm.Message, est TokenEstimator) []unit {
 }
 
 // lastUserUnit returns the index of the last unit that starts with a user message.
-func lastUserUnit(msgs []llm.Message, us []unit) int {
+func lastUserUnit(msgs []Message, us []unit) int {
 	for i, u := range slices.Backward(us) {
-		if msgs[u.start].Role == llm.RoleUser {
+		if msgs[u.start].Role == RoleUser {
 			return i
 		}
 	}
@@ -87,11 +86,11 @@ type ContextWindow struct {
 }
 
 // Fit implements ContextManager.
-func (w ContextWindow) Fit(_ context.Context, system string, msgs []llm.Message, budget int) ([]llm.Message, error) {
+func (w ContextWindow) Fit(_ context.Context, system string, msgs []Message, budget int) ([]Message, error) {
 	return window(system, msgs, budget, estimator(w.Estimator)), nil
 }
 
-func window(system string, msgs []llm.Message, budget int, est TokenEstimator) []llm.Message {
+func window(system string, msgs []Message, budget int, est TokenEstimator) []Message {
 	if budget <= 0 || len(msgs) == 0 {
 		return msgs
 	}
@@ -110,7 +109,7 @@ func window(system string, msgs []llm.Message, budget int, est TokenEstimator) [
 		total -= us[start].tokens
 		start++
 	}
-	for start < keep && msgs[us[start].start].Role != llm.RoleUser {
+	for start < keep && msgs[us[start].start].Role != RoleUser {
 		start++
 	}
 	return msgs[us[start].start:]

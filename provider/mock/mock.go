@@ -1,4 +1,4 @@
-// Package mock provides a scripted llm.Provider for tests and offline demos.
+// Package mock provides a scripted react.Provider for tests and offline demos.
 package mock
 
 import (
@@ -9,7 +9,7 @@ import (
 	"iter"
 	"sync"
 
-	"github.com/gosolu/react/llm"
+	"github.com/gosolu/react"
 )
 
 // ErrExhausted is returned when the script has no more steps.
@@ -17,27 +17,27 @@ var ErrExhausted = errors.New("mock: script exhausted")
 
 // Step is one scripted model turn.
 type Step struct {
-	Response *llm.Response
+	Response *react.Response
 	Err      error
 }
 
 // Text scripts a final text answer.
 func Text(s string) Step {
-	return Step{Response: &llm.Response{
-		Message:    llm.AssistantText(s),
-		StopReason: llm.StopEndTurn,
-		Usage:      llm.Usage{InputTokens: 10, OutputTokens: len(s)/4 + 1},
+	return Step{Response: &react.Response{
+		Message:    react.AssistantText(s),
+		StopReason: react.StopEnd,
+		Usage:      react.Usage{InputTokens: 10, OutputTokens: len(s)/4 + 1},
 	}}
 }
 
 // ToolCalls scripts an assistant turn that calls tools, with optional
 // leading text.
-func ToolCalls(text string, calls ...llm.ToolCall) Step {
-	msg := llm.Message{Role: llm.RoleAssistant, ToolCalls: calls}
+func ToolCalls(text string, calls ...react.ToolCall) Step {
+	msg := react.Message{Role: react.RoleAssistant, ToolCalls: calls}
 	if text != "" {
-		msg.Content = []llm.Part{llm.TextPart(text)}
+		msg.Content = []react.Part{react.TextPart(text)}
 	}
-	return Step{Response: &llm.Response{Message: msg, StopReason: llm.StopToolUse, Usage: llm.Usage{InputTokens: 10, OutputTokens: 5}}}
+	return Step{Response: &react.Response{Message: msg, StopReason: react.StopToolCall, Usage: react.Usage{InputTokens: 10, OutputTokens: 5}}}
 }
 
 // Error scripts a provider failure.
@@ -49,7 +49,7 @@ var callSeq struct {
 }
 
 // Call builds a tool call with an auto-generated ID.
-func Call(name string, args any) llm.ToolCall {
+func Call(name string, args any) react.ToolCall {
 	var raw json.RawMessage
 	switch a := args.(type) {
 	case string:
@@ -67,11 +67,11 @@ func Call(name string, args any) llm.ToolCall {
 	callSeq.n++
 	id := fmt.Sprintf("call_%d", callSeq.n)
 	callSeq.Unlock()
-	return llm.ToolCall{ID: id, Name: name, Arguments: raw}
+	return react.ToolCall{ID: id, Name: name, Arguments: raw}
 }
 
 // HandlerFunc computes a response dynamically from the request.
-type HandlerFunc func(ctx context.Context, req *llm.Request) (*llm.Response, error)
+type HandlerFunc func(ctx context.Context, req *react.Request) (*react.Response, error)
 
 // Provider is a scripted provider. It is safe for concurrent use.
 type Provider struct {
@@ -82,7 +82,7 @@ type Provider struct {
 	steps    []Step
 	next     int
 	handler  HandlerFunc
-	requests []llm.Request
+	requests []react.Request
 }
 
 // New returns a provider that replays steps in order.
@@ -91,23 +91,23 @@ func New(steps ...Step) *Provider { return &Provider{steps: steps} }
 // NewFunc returns a provider that computes each response with h.
 func NewFunc(h HandlerFunc) *Provider { return &Provider{handler: h} }
 
-// Name implements llm.Provider.
+// Name implements react.Provider.
 func (p *Provider) Name() string { return "mock" }
 
 // Requests returns copies of all requests received so far.
-func (p *Provider) Requests() []llm.Request {
+func (p *Provider) Requests() []react.Request {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return append([]llm.Request(nil), p.requests...)
+	return append([]react.Request(nil), p.requests...)
 }
 
-func (p *Provider) respond(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+func (p *Provider) respond(ctx context.Context, req *react.Request) (*react.Response, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	cp := *req
-	cp.Messages = llm.CloneMessages(req.Messages)
-	cp.Tools = append([]llm.ToolSpec(nil), req.Tools...)
+	cp.Messages = react.CloneMessages(req.Messages)
+	cp.Tools = append([]react.ToolSpec(nil), req.Tools...)
 
 	p.mu.Lock()
 	p.requests = append(p.requests, cp)
@@ -138,26 +138,26 @@ func (p *Provider) respond(ctx context.Context, req *llm.Request) (*llm.Response
 	return &r, nil
 }
 
-// Generate implements llm.Provider.
-func (p *Provider) Generate(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+// Generate implements react.Provider.
+func (p *Provider) Generate(ctx context.Context, req *react.Request) (*react.Response, error) {
 	return p.respond(ctx, req)
 }
 
-// Stream implements llm.Provider by chunking the scripted response.
-func (p *Provider) Stream(ctx context.Context, req *llm.Request) iter.Seq2[llm.StreamEvent, error] {
-	return func(yield func(llm.StreamEvent, error) bool) {
+// Stream implements react.Provider by chunking the scripted response.
+func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[react.StreamEvent, error] {
+	return func(yield func(react.StreamEvent, error) bool) {
 		resp, err := p.respond(ctx, req)
 		if err != nil {
-			yield(llm.StreamEvent{}, err)
+			yield(react.StreamEvent{}, err)
 			return
 		}
 		size := p.ChunkSize
 		if size == 0 {
 			size = 4
 		}
-		for ev, err := range llm.StreamResponse(resp, size) {
+		for ev, err := range react.StreamResponse(resp, size) {
 			if ctx.Err() != nil {
-				yield(llm.StreamEvent{}, ctx.Err())
+				yield(react.StreamEvent{}, ctx.Err())
 				return
 			}
 			if !yield(ev, err) {

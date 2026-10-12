@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gosolu/react/llm"
 )
 
 // ToolOption customises a typed tool's spec.
@@ -29,7 +28,7 @@ func WithToolSchema(schema json.RawMessage) ToolOption { return func(s *ToolSpec
 
 // New builds a tool from a typed Go function. The input schema is derived
 // from In (see SchemaFor). Out is converted to the result as follows:
-// Result is used as-is, string becomes text, []llm.Part becomes content, and
+// Result is used as-is, string becomes text, []Part becomes content, and
 // anything else is JSON-encoded.
 //
 // Errors returned by fn are surfaced to the model as error results by the
@@ -65,7 +64,7 @@ func toResult(v any) (ToolResult, error) {
 		return *o, nil
 	case string:
 		return TextResult(o), nil
-	case []llm.Part:
+	case []Part:
 		return ToolResult{Content: o}, nil
 	case nil:
 		return ToolResult{}, nil

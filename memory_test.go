@@ -6,7 +6,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gosolu/react/llm"
 )
 
 func TestInMemory(t *testing.T) {
@@ -27,10 +26,10 @@ func runStoreTest(t *testing.T, newStore func() Store) {
 
 	t.Run("AppendLoadRoundTrip", func(t *testing.T) {
 		s := newStore()
-		in := []llm.Message{
-			llm.UserText("hi"),
-			{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "c1", Name: "t", Arguments: []byte(`{"x":1}`)}}},
-			llm.ToolResult("c1", "t", []llm.Part{llm.TextPart("ok")}, true),
+		in := []Message{
+			UserText("hi"),
+			{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "t", Arguments: []byte(`{"x":1}`)}}},
+			ToolResultMessage("c1", "t", []Part{TextPart("ok")}, true),
 		}
 		if err := s.Append(ctx, "a", in[0]); err != nil {
 			t.Fatal(err)
@@ -53,7 +52,7 @@ func runStoreTest(t *testing.T, newStore func() Store) {
 
 	t.Run("NoAliasing", func(t *testing.T) {
 		s := newStore()
-		m := llm.UserText("orig")
+		m := UserText("orig")
 		_ = s.Append(ctx, "a", m)
 		m.Content[0].Text = "mutated"
 		got, _ := s.Load(ctx, "a")
@@ -66,8 +65,8 @@ func runStoreTest(t *testing.T, newStore func() Store) {
 
 	t.Run("ReplaceDelete", func(t *testing.T) {
 		s := newStore()
-		_ = s.Append(ctx, "a", llm.UserText("1"), llm.UserText("2"))
-		if err := s.Replace(ctx, "a", []llm.Message{llm.UserText("summary")}); err != nil {
+		_ = s.Append(ctx, "a", UserText("1"), UserText("2"))
+		if err := s.Replace(ctx, "a", []Message{UserText("summary")}); err != nil {
 			t.Fatal(err)
 		}
 		got, _ := s.Load(ctx, "a")
@@ -90,7 +89,7 @@ func runStoreTest(t *testing.T, newStore func() Store) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_ = s.Append(ctx, "c", llm.UserText(fmt.Sprint(i)))
+				_ = s.Append(ctx, "c", UserText(fmt.Sprint(i)))
 				_, _ = s.Load(ctx, "c")
 			}()
 		}

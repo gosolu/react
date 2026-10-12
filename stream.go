@@ -1,4 +1,4 @@
-package llm
+package react
 
 import (
 	"encoding/json"
@@ -116,11 +116,11 @@ func (a *Accumulator) Response() *Response {
 		msg.ToolCalls = append(msg.ToolCalls, ToolCall{ID: c.id, Name: c.name, Arguments: json.RawMessage(args)})
 	}
 	stop := a.stop
-	if stop == "" || (stop == StopEndTurn && len(msg.ToolCalls) > 0) {
+	if stop == "" || (stop == StopEnd && len(msg.ToolCalls) > 0) {
 		if len(msg.ToolCalls) > 0 {
-			stop = StopToolUse
+			stop = StopToolCall
 		} else {
-			stop = StopEndTurn
+			stop = StopEnd
 		}
 	}
 	return &Response{Message: msg, Reasoning: a.reasoning.String(), StopReason: stop, Usage: a.usage}
@@ -138,42 +138,47 @@ func StreamResponse(resp *Response, chunkSize int) iter.Seq2[StreamEvent, error]
 				}
 			}
 		}
-		for _, c := range chunk(resp.Message.Text(), chunkSize) {
-			if !yield(StreamEvent{Type: StreamTextDelta, Text: c}, nil) {
-				return
+		if text := resp.Message.Text(); text != "" {
+			for _, c := range chunk(text, chunkSize) {
+				if !yield(StreamEvent{Type: StreamTextDelta, Text: c}, nil) {
+					return
+				}
 			}
 		}
-		for i, tc := range resp.Message.ToolCalls {
-			if !yield(StreamEvent{Type: StreamToolCallStart, Index: i, ToolCallID: tc.ID, ToolName: tc.Name}, nil) {
+		for i, call := range resp.Message.ToolCalls {
+			if !yield(StreamEvent{Type: StreamToolCallStart, Index: i, ToolCallID: call.ID, ToolName: call.Name}, nil) {
 				return
 			}
-			for _, c := range chunk(string(tc.Arguments), chunkSize) {
+			for _, c := range chunk(string(call.Arguments), chunkSize) {
 				if !yield(StreamEvent{Type: StreamToolCallDelta, Index: i, ArgsDelta: c}, nil) {
 					return
 				}
 			}
 		}
-		u := resp.Usage
-		if !yield(StreamEvent{Type: StreamUsage, Usage: &u}, nil) {
-			return
+		if resp.Usage.Total() > 0 {
+			u := resp.Usage
+			if !yield(StreamEvent{Type: StreamUsage, Usage: &u}, nil) {
+				return
+			}
 		}
 		yield(StreamEvent{Type: StreamDone, StopReason: resp.StopReason}, nil)
 	}
 }
 
 func chunk(s string, n int) []string {
-	if s == "" {
-		return nil
-	}
 	if n <= 0 || len(s) <= n {
+		if s == "" {
+			return nil
+		}
 		return []string{s}
 	}
 	var out []string
-	r := []rune(s)
-	for len(r) > 0 {
-		k := min(n, len(r))
-		out = append(out, string(r[:k]))
-		r = r[k:]
+	for len(s) > n {
+		out = append(out, s[:n])
+		s = s[n:]
+	}
+	if len(s) > 0 {
+		out = append(out, s)
 	}
 	return out
 }

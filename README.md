@@ -13,9 +13,9 @@ Features a unified ReAct (Reasoning + Acting) loop with support for both streami
 - **Go 1.23+ Iterators:** Streaming exposes range-over-func iterators (`iter.Seq2[Event, error]`) with cancellation on break.
 - **Zero External Dependencies:** Built 100% on the Go standard library (no third-party dependencies required). Native HTTP clients, SSE parsers, and a built-in YAML frontmatter parser for skills.
 - **Provider Abstraction:**
-  - `llm/openai`: Works with OpenAI and OpenAI-compatible endpoints (Ollama, vLLM, DeepSeek, LocalAI, etc.).
-  - `llm/anthropic`: Anthropic Messages API.
-  - `llm/mock`: Scripted provider for deterministic testing and offline development.
+  - `provider/openai`: Works with OpenAI and OpenAI-compatible endpoints (Ollama, vLLM, DeepSeek, LocalAI, etc.).
+  - `provider/anthropic`: Anthropic Messages API.
+  - `provider/mock`: Scripted provider for deterministic testing and offline development.
 - **Type-safe Tools:**
   - Generics-based tool definitions (`react.NewTool[In, Out](...)`).
   - Automatic JSON Schema generation via reflection with support for struct tags (`desc`, `enum`, `omitempty`, `required`).
@@ -66,7 +66,8 @@ react/
 │   ├── basic/                                                    # Minimal non-streaming example
 │   ├── plugin/                                                   # In-process plugin & skill folder example
 │   └── streaming/                                                # Streaming example using iter.Seq2
-└── llm/                                                          # Provider abstraction and HTTP clients
+├── provider.go, message.go, stream.go                          # Messages, streaming accumulator, provider interface
+└── provider/                                                          # Provider abstraction and HTTP clients
     ├── anthropic/                                                # Anthropic Messages API client
     ├── mock/                                                     # Scripted mock provider for testing
     └── openai/                                                   # OpenAI-compatible API client
@@ -98,7 +99,7 @@ import (
 	"os"
 
 	"github.com/gosolu/react"
-	"github.com/gosolu/react/llm/openai"
+	"github.com/gosolu/react/provider/openai"
 	"github.com/gosolu/react/tools/builtin"
 )
 
@@ -224,7 +225,7 @@ func (p *MyPlugin) Init(ctx context.Context, r react.Registrar) error {
 
     // Add lifecycle hooks
     r.AddHooks(react.Hooks{
-        BeforeTool: func(ctx context.Context, rc *react.RunContext, call *llm.ToolCall) (react.HookDecision, error) {
+        BeforeTool: func(ctx context.Context, rc *react.RunContext, call *react.ToolCall) (react.HookDecision, error) {
             log.Printf("Executing tool %s in turn %d", call.Name, rc.Turn)
             return react.HookDecision{Action: react.HookContinue}, nil
         },
@@ -256,7 +257,7 @@ agent, _ := react.New(
         },
 
         // 2. Filter tool execution with MatchTool (glob pattern matching)
-        BeforeTool: react.MatchTool("bash*", func(ctx context.Context, rc *react.RunContext, call *llm.ToolCall) (react.HookDecision, error) {
+        BeforeTool: react.MatchTool("bash*", func(ctx context.Context, rc *react.RunContext, call *react.ToolCall) (react.HookDecision, error) {
             // Can Deny, Override with synthetic result, or rewrite UpdatedArguments
             return react.HookDecision{Action: react.HookContinue, AdditionalContext: "Running in sandbox"}, nil
         }),

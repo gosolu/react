@@ -2,38 +2,37 @@ package react
 
 import (
 	"context"
+	"errors"
+	"iter"
 	"strings"
 	"testing"
-
-	"github.com/gosolu/react/llm"
-	"github.com/gosolu/react/llm/mock"
 )
 
 func long(s string) string { return strings.Repeat(s, 400) } // ~100 tokens
 
-func history() []llm.Message {
-	return []llm.Message{
-		llm.UserText(long("a")),
-		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "1", Name: "t", Arguments: []byte(`{}`)}}},
-		llm.ToolResult("1", "t", []llm.Part{llm.TextPart(long("r"))}, false),
-		llm.AssistantText(long("b")),
-		llm.UserText(long("c")),
-		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "2", Name: "t", Arguments: []byte(`{}`)}}},
-		llm.ToolResult("2", "t", []llm.Part{llm.TextPart(long("r"))}, false),
-		llm.AssistantText(long("d")),
-		llm.UserText(long("e")),
+func history() []Message {
+	return []Message{
+		UserText(long("a")),
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "1", Name: "t", Arguments: []byte(`{}`)}}},
+		ToolResultMessage("1", "t", []Part{TextPart(long("r"))}, false),
+		AssistantText(long("b")),
+		UserText(long("c")),
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "2", Name: "t", Arguments: []byte(`{}`)}}},
+		ToolResultMessage("2", "t", []Part{TextPart(long("r"))}, false),
+		AssistantText(long("d")),
+		UserText(long("e")),
 	}
 }
 
-func validate(t *testing.T, out []llm.Message) {
+func validate(t *testing.T, out []Message) {
 	t.Helper()
-	if len(out) == 0 || out[0].Role != llm.RoleUser {
+	if len(out) == 0 || out[0].Role != RoleUser {
 		t.Fatalf("history must start with user: %+v", out)
 	}
 	for i, m := range out {
-		if m.Role == llm.RoleTool {
+		if m.Role == RoleTool {
 			prev := out[i-1]
-			if prev.Role != llm.RoleTool && len(prev.ToolCalls) == 0 {
+			if prev.Role != RoleTool && len(prev.ToolCalls) == 0 {
 				t.Fatalf("orphan tool result at %d", i)
 			}
 		}
@@ -59,8 +58,25 @@ func TestWindow(t *testing.T) {
 	}
 }
 
+type testSummarizeProvider struct {
+	calls int
+	text  string
+}
+
+func (p *testSummarizeProvider) Name() string { return "test-summarize" }
+func (p *testSummarizeProvider) Generate(ctx context.Context, req *Request) (*Response, error) {
+	p.calls++
+	if p.calls > 1 {
+		return nil, errors.New("exhausted")
+	}
+	return &Response{Message: AssistantText(p.text)}, nil
+}
+func (p *testSummarizeProvider) Stream(ctx context.Context, req *Request) iter.Seq2[StreamEvent, error] {
+	return StreamResponse(&Response{Message: AssistantText(p.text)}, 0)
+}
+
 func TestSummarize(t *testing.T) {
-	p := mock.New(mock.Text("SUMMARY"))
+	p := &testSummarizeProvider{text: "SUMMARY"}
 	s := &ContextSummarizer{Provider: p, Model: "m"}
 	out, err := s.Fit(context.Background(), "", history(), 500)
 	if err != nil {
@@ -70,11 +86,11 @@ func TestSummarize(t *testing.T) {
 	if !strings.Contains(out[0].Text(), "SUMMARY") {
 		t.Fatalf("no summary: %q", out[0].Text())
 	}
-	// Second call hits the cache (the mock would return ErrExhausted otherwise).
+	// Second call hits the cache (the provider would return exhausted otherwise).
 	if _, err := s.Fit(context.Background(), "", history(), 500); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.Requests()) != 1 {
-		t.Fatalf("summarizer called %d times", len(p.Requests()))
+	if p.calls != 1 {
+		t.Fatalf("summarizer called %d times", p.calls)
 	}
 }
