@@ -132,7 +132,7 @@ func addStructFields(t reflect.Type, visiting map[reflect.Type]bool, props map[s
 
 func enumValues(spec string, typ any) []any {
 	var out []any
-	for v := range strings.SplitSeq(spec, ",") {
+	for _, v := range strings.Split(spec, ",") {
 		v = strings.TrimSpace(v)
 		switch typ {
 		case "integer":

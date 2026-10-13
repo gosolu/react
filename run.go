@@ -32,7 +32,9 @@ func (a *Agent) Stream(ctx context.Context, sessionID, input string, opts ...Run
 		ch := make(chan Event)
 		var runErr error
 		var wg sync.WaitGroup
-		wg.Go(func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 			defer close(ch)
 			_, runErr = a.execute(ctx, sessionID, input, rcfg, true, func(ev Event) bool {
 				select {
@@ -42,7 +44,7 @@ func (a *Agent) Stream(ctx context.Context, sessionID, input string, opts ...Run
 					return false
 				}
 			})
-		})
+		}()
 
 		for ev := range ch {
 			if !yield(ev, nil) {

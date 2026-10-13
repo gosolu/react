@@ -16,6 +16,7 @@ const (
 	EventToolResult        EventType = "tool_result"
 	EventTurnEnd           EventType = "turn_end"
 	EventRunEnd            EventType = "run_end"
+	EventWarning           EventType = "warning"
 	EventError             EventType = "error"
 )
 

@@ -28,8 +28,10 @@ type config struct {
 	toolTimeout   time.Duration
 	maxTokens     int
 	temperature   *float64
-	maxDepth      int
-	strictSkills  bool
+	maxDepth          int
+	strictSkills      bool
+	maxToolOutput     int
+	persistCompaction bool
 }
 
 // WithName sets the agent name (shown in events; default "agent").
@@ -128,15 +130,23 @@ func WithTemperature(t float64) Option { return func(c *config) { c.temperature 
 // WithMaxDepth bounds sub-agent nesting (default 3).
 func WithMaxDepth(n int) Option { return func(c *config) { c.maxDepth = n } }
 
+// WithMaxToolOutput bounds the maximum character/byte length of tool results (default 64KB, 0 disables).
+func WithMaxToolOutput(bytes int) Option { return func(c *config) { c.maxToolOutput = bytes } }
+
+// WithPersistCompaction enables saving compacted history back to Store when Fit shrinks the history.
+func WithPersistCompaction() Option { return func(c *config) { c.persistCompaction = true } }
+
 // RunOption customises a single run.
 type RunOption func(*runConfig)
 
 type runConfig struct {
-	parts      []Part
-	history    []Message
-	model      string
-	toolChoice string
-	onEvent    func(Event)
+	parts          []Part
+	history        []Message
+	model          string
+	toolChoice     string
+	tools          []Tool
+	responseFormat *ResponseFormat
+	onEvent        func(Event)
 }
 
 // WithInputParts appends extra content (e.g. images) to the user message.
@@ -153,6 +163,16 @@ func WithRunModel(m string) RunOption { return func(r *runConfig) { r.model = m 
 
 // WithToolChoice sets the tool choice for this run (auto, none, required, or a tool name).
 func WithToolChoice(choice string) RunOption { return func(r *runConfig) { r.toolChoice = choice } }
+
+// WithRunTools injects additional tools for this specific run.
+func WithRunTools(ts ...Tool) RunOption {
+	return func(r *runConfig) { r.tools = append(r.tools, ts...) }
+}
+
+// WithResponseFormat sets the desired response format (e.g. JSON schema) for this run.
+func WithResponseFormat(rf ResponseFormat) RunOption {
+	return func(r *runConfig) { r.responseFormat = &rf }
+}
 
 // WithEventHandler observes events during Run (non-stream mode). Calls are
 // serialized. It is also honoured by Stream, in addition to the iterator.

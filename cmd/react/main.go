@@ -28,6 +28,7 @@ func main() {
 	streamFlag := flag.Bool("stream", true, "Enable streaming responses")
 	skillsDirFlag := flag.String("skills", "", "Path to skills directory")
 	sessionFlag := flag.String("session", "default-repl", "Session ID")
+	storeDirFlag := flag.String("store-dir", "", "Directory to persist conversation sessions across CLI restarts")
 	systemPromptFlag := flag.String("system", "You are a helpful and capable agent assistant equipped with system tools.", "Base system prompt")
 	flag.Parse()
 
@@ -109,16 +110,24 @@ func main() {
 
 	reader := bufio.NewReader(os.Stdin)
 
-	// Interactive CLI approval for destructive tools
-	approver := react.PermissionApproverFunc(func(ctx context.Context, req react.ApprovalRequest) (bool, error) {
-		fmt.Printf("\n⚠️  [APPROVAL NEEDED] Tool: %s\nArguments: %s\nApprove execution? [y/N]: ", req.Call.Name, string(req.Call.Arguments))
+	// Interactive CLI approval for destructive tools with session memory
+	var remember *react.SessionRememberApprover
+	baseApprover := react.PermissionApproverFunc(func(ctx context.Context, req react.ApprovalRequest) (bool, error) {
+		fmt.Printf("\n⚠️  [APPROVAL NEEDED] Tool: %s\nArguments: %s\nApprove execution? [y/N/a (always for session)]: ", req.Call.Name, string(req.Call.Arguments))
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			return false, err
 		}
 		line = strings.TrimSpace(strings.ToLower(line))
+		if line == "a" || line == "always" {
+			if remember != nil {
+				remember.Remember(req.Call.Name)
+			}
+			return true, nil
+		}
 		return line == "y" || line == "yes", nil
 	})
+	remember = react.NewSessionRememberApprover(baseApprover)
 
 	opts := []react.Option{
 		react.WithName("react-cli"),
@@ -126,7 +135,16 @@ func main() {
 		react.WithModel(model),
 		react.WithSystemPrompt(*systemPromptFlag),
 		react.WithTools(builtin.All()...),
-		react.WithPermission(react.DefaultPermissionPolicy(), approver),
+		react.WithPermission(react.DefaultPermissionPolicy(), remember),
+	}
+
+	if *storeDirFlag != "" {
+		fs, err := react.NewFileStore(*storeDirFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to initialize store directory %q: %v\n", *storeDirFlag, err)
+			os.Exit(1)
+		}
+		opts = append(opts, react.WithStore(fs))
 	}
 
 	if *skillsDirFlag != "" {

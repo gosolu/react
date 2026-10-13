@@ -403,6 +403,9 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 	if req.Temperature != nil {
 		body["temperature"] = *req.Temperature
 	}
+	if req.ResponseFormat != nil {
+		body["response_format"] = map[string]any{"type": string(req.ResponseFormat.Type)}
+	}
 
 	var messages []map[string]any
 	if req.System != "" {

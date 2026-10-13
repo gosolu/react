@@ -116,7 +116,17 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 	if rcfg.model != "" {
 		model = rcfg.model
 	}
-	specs := a.registry.Specs()
+	activeReg := a.registry
+	if len(rcfg.tools) > 0 {
+		activeReg = NewToolRegistry()
+		for _, t := range a.registry.List() {
+			_ = activeReg.Register(t)
+		}
+		for _, t := range rcfg.tools {
+			_ = activeReg.Register(t)
+		}
+	}
+	specs := activeReg.Specs()
 
 	emit(Event{Type: EventRunStart})
 
@@ -137,6 +147,11 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 		}
 		a.hooks.PostCompact(ctx, rc, len(history), len(msgs))
 
+		if a.cfg.persistCompaction && sessionID != "" && len(msgs) < len(history) {
+			history = msgs
+			_ = a.cfg.store.Replace(context.WithoutCancel(ctx), sessionID, history)
+		}
+
 		if reminders := rc.ConsumeContext(); len(reminders) > 0 {
 			var b strings.Builder
 			b.WriteString("<system-reminder>\n")
@@ -148,12 +163,13 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 			msgs = append(msgs, UserText(b.String()))
 		}
 		req := &Request{
-			Model:       model,
-			System:      a.system,
-			Messages:    msgs,
-			Tools:       specs,
-			MaxTokens:   a.cfg.maxTokens,
-			Temperature: a.cfg.temperature,
+			Model:          model,
+			System:         a.system,
+			Messages:       msgs,
+			Tools:          specs,
+			MaxTokens:      a.cfg.maxTokens,
+			Temperature:    a.cfg.temperature,
+			ResponseFormat: rcfg.responseFormat,
 		}
 		// A forced tool choice applies to the first turn only, otherwise the
 		// model could never produce a final answer.
@@ -187,6 +203,9 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 		}
 		result.Usage.Add(resp.Usage)
 		result.StopReason = resp.StopReason
+		if resp.StopReason == StopLength {
+			emit(Event{Type: EventWarning, Text: "model generation reached maximum output tokens (StopLength)"})
+		}
 		history = append(history, msg)
 		pending = append(pending, msg)
 		result.Messages = append(result.Messages, msg)
@@ -225,7 +244,7 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 			c := msg.ToolCalls[i]
 			emit(Event{Type: EventToolCallReady, ToolCall: &c, ToolIndex: i})
 		}
-		toolMsgs := a.runTools(ctx, rc, msg.ToolCalls, emit)
+		toolMsgs := a.runTools(ctx, rc, activeReg, msg.ToolCalls, emit)
 		history = append(history, toolMsgs...)
 		pending = append(pending, toolMsgs...)
 		result.Messages = append(result.Messages, toolMsgs...)
@@ -278,22 +297,22 @@ func (a *Agent) callModel(ctx context.Context, req *Request, stream bool, emit e
 
 // runTools executes a batch of tool calls and returns tool-result messages in
 // call order.
-func (a *Agent) runTools(ctx context.Context, rc *RunContext, calls []ToolCall, emit emitFunc) []Message {
+func (a *Agent) runTools(ctx context.Context, rc *RunContext, reg *ToolRegistry, calls []ToolCall, emit emitFunc) []Message {
 	mws := a.middleware
 	if a.cfg.toolTimeout > 0 {
 		// Innermost, so approval waits do not count against the tool timeout.
 		mws = append(append([]ToolMiddleware(nil), mws...), TimeoutMiddleware(a.cfg.toolTimeout))
 	}
 	exec := ChainToolMiddleware(func(ctx context.Context, call ToolCall) (ToolResult, error) {
-		t, _ := a.registry.Get(call.Name)
+		t, _ := reg.Get(call.Name)
 		return t.Call(ctx, call.Arguments)
 	}, mws...)
 
 	pipeline := func(ctx context.Context, call ToolCall) (ToolResult, error) {
-		return a.handleCall(ctx, rc, call, exec, emit)
+		return a.handleCall(ctx, rc, reg, call, exec, emit)
 	}
 	isSeq := func(name string) bool {
-		t, ok := a.registry.Get(name)
+		t, ok := reg.Get(name)
 		return ok && t.Spec().Annotations.Sequential
 	}
 	ex := ToolExecutor{MaxParallel: a.cfg.maxParallel}
@@ -304,11 +323,20 @@ func (a *Agent) runTools(ctx context.Context, rc *RunContext, calls []ToolCall, 
 
 	msgs := make([]Message, len(results))
 	for i, cr := range results {
-		content := cr.Result.Content
+		res := cr.Result
+		if a.cfg.maxToolOutput > 0 {
+			for j, p := range res.Content {
+				if p.Type == PartText && len(p.Text) > a.cfg.maxToolOutput {
+					origLen := len(p.Text)
+					res.Content[j].Text = fmt.Sprintf("%s\n...[output truncated from %d bytes]", p.Text[:a.cfg.maxToolOutput], origLen)
+				}
+			}
+		}
+		content := res.Content
 		if len(content) == 0 {
 			content = []Part{TextPart("(no output)")}
 		}
-		msgs[i] = ToolResultMessage(cr.Call.ID, cr.Call.Name, content, cr.Result.IsError)
+		msgs[i] = ToolResultMessage(cr.Call.ID, cr.Call.Name, content, res.IsError)
 	}
 	_ = a.hooks.AfterToolBatch(ctx, rc, results)
 	return msgs
@@ -316,11 +344,11 @@ func (a *Agent) runTools(ctx context.Context, rc *RunContext, calls []ToolCall, 
 
 // handleCall applies validation, permission policy, hooks and middleware to a
 // single call.
-func (a *Agent) handleCall(ctx context.Context, rc *RunContext, call ToolCall, exec ToolHandler, emit emitFunc) (ToolResult, error) {
-	t, ok := a.registry.Get(call.Name)
+func (a *Agent) handleCall(ctx context.Context, rc *RunContext, reg *ToolRegistry, call ToolCall, exec ToolHandler, emit emitFunc) (ToolResult, error) {
+	t, ok := reg.Get(call.Name)
 	if !ok {
 		var names []string
-		for _, s := range a.registry.Specs() {
+		for _, s := range reg.Specs() {
 			names = append(names, s.Name)
 		}
 		return ErrorResult(fmt.Sprintf("Error: unknown tool %q. Available tools: %s", call.Name, strings.Join(names, ", "))), nil

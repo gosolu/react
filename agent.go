@@ -17,10 +17,11 @@ import (
 
 // Errors returned by the agent.
 var (
-	ErrMaxTurns    = errors.New("agent: max turns exceeded")
-	ErrMaxDepth    = errors.New("agent: max sub-agent depth exceeded")
-	ErrNoProvider  = errors.New("agent: provider is required")
-	ErrAgentClosed = errors.New("agent: closed")
+	ErrMaxTurns         = errors.New("agent: max turns exceeded")
+	ErrMaxDepth         = errors.New("agent: max sub-agent depth exceeded")
+	ErrNoProvider       = errors.New("agent: provider is required")
+	ErrAgentClosed      = errors.New("agent: closed")
+	ErrTruncatedOutput  = errors.New("agent: model output reached max tokens limit")
 )
 
 // Agent is an immutable, concurrency-safe agent. Create with New.
@@ -47,6 +48,7 @@ func New(opts ...Option) (*Agent, error) {
 		maxParallel: 4,
 		toolTimeout: 2 * time.Minute,
 		maxDepth:    3,
+		maxToolOutput: 64 * 1024,
 	}
 	for _, o := range opts {
 		o(&cfg)

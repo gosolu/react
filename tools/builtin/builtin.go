@@ -1,5 +1,5 @@
 // Package builtin provides common built-in tools for agents:
-// read_file, write_file, list_dir, and shell.
+// read_file, write_file, edit_file, list_dir, and shell.
 package builtin
 
 import (
@@ -15,22 +15,98 @@ import (
 	"github.com/gosolu/react"
 )
 
+// Option configures builtin tools.
+type Option func(*config)
+
+type config struct {
+	baseDir     string
+	maxFileSize int64
+	timeout     time.Duration
+	workDir     string
+}
+
+// WithBaseDir confines file operations to paths within dir.
+func WithBaseDir(dir string) Option {
+	return func(c *config) { c.baseDir = dir }
+}
+
+// WithMaxFileSize sets maximum file read size (default 512KB).
+func WithMaxFileSize(n int64) Option {
+	return func(c *config) { c.maxFileSize = n }
+}
+
+// WithTimeout sets custom execution timeout (e.g. for Shell).
+func WithTimeout(d time.Duration) Option {
+	return func(c *config) { c.timeout = d }
+}
+
+// WithWorkDir sets working directory for command execution.
+func WithWorkDir(dir string) Option {
+	return func(c *config) { c.workDir = dir }
+}
+
+func parseOpts(opts []any) (config, []react.ToolOption) {
+	var cfg config
+	var toolOpts []react.ToolOption
+	for _, o := range opts {
+		switch v := o.(type) {
+		case Option:
+			v(&cfg)
+		case react.ToolOption:
+			toolOpts = append(toolOpts, v)
+		}
+	}
+	return cfg, toolOpts
+}
+
+func resolvePath(baseDir, path string) (string, error) {
+	clean := filepath.Clean(path)
+	if baseDir == "" {
+		return clean, nil
+	}
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", err
+	}
+	target := clean
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(absBase, target)
+	} else {
+		target = filepath.Clean(target)
+	}
+	rel, err := filepath.Rel(absBase, target)
+	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		return "", fmt.Errorf("access denied: path %q is outside allowed directory %q", path, baseDir)
+	}
+	return target, nil
+}
+
 type readFileInput struct {
 	Path string `json:"path" desc:"The path of the file to read"`
 }
 
 // ReadFile returns a tool to inspect file contents. Marked ReadOnly.
-func ReadFile(opts ...react.ToolOption) react.Tool {
+func ReadFile(opts ...any) react.Tool {
+	cfg, toolOpts := parseOpts(opts)
 	defaultOpts := []react.ToolOption{react.ReadOnly()}
-	defaultOpts = append(defaultOpts, opts...)
+	defaultOpts = append(defaultOpts, toolOpts...)
+
+	maxSize := cfg.maxFileSize
+	if maxSize <= 0 {
+		maxSize = 512 * 1024
+	}
+
 	return react.NewTool("read_file", "Read the entire contents of a file at the given path.", func(ctx context.Context, in readFileInput) (string, error) {
-		clean := filepath.Clean(in.Path)
-		data, err := os.ReadFile(clean)
+		target, err := resolvePath(cfg.baseDir, in.Path)
 		if err != nil {
 			return "", err
 		}
-		if len(data) > 512*1024 {
-			return string(data[:512*1024]) + "\n...[truncated]", nil
+		data, err := os.ReadFile(target)
+		if err != nil {
+			return "", err
+		}
+		if int64(len(data)) > maxSize {
+			return string(data[:maxSize]) + "\n...[truncated]", nil
 		}
 		return string(data), nil
 	}, defaultOpts...)
@@ -42,18 +118,72 @@ type writeFileInput struct {
 }
 
 // WriteFile returns a tool to create or overwrite files. Marked Destructive.
-func WriteFile(opts ...react.ToolOption) react.Tool {
+func WriteFile(opts ...any) react.Tool {
+	cfg, toolOpts := parseOpts(opts)
 	defaultOpts := []react.ToolOption{react.Destructive()}
-	defaultOpts = append(defaultOpts, opts...)
+	defaultOpts = append(defaultOpts, toolOpts...)
+
 	return react.NewTool("write_file", "Write text content to a file. Overwrites existing files and creates parent directories if needed.", func(ctx context.Context, in writeFileInput) (string, error) {
-		clean := filepath.Clean(in.Path)
-		if err := os.MkdirAll(filepath.Dir(clean), 0755); err != nil {
+		target, err := resolvePath(cfg.baseDir, in.Path)
+		if err != nil {
 			return "", err
 		}
-		if err := os.WriteFile(clean, []byte(in.Content), 0644); err != nil {
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("Successfully wrote %d bytes to %s", len(in.Content), clean), nil
+		if err := os.WriteFile(target, []byte(in.Content), 0644); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Successfully wrote %d bytes to %s", len(in.Content), target), nil
+	}, defaultOpts...)
+}
+
+type editFileInput struct {
+	Path      string `json:"path" desc:"The path of the file to edit"`
+	OldString string `json:"old_string" desc:"The exact unique text chunk to replace"`
+	NewString string `json:"new_string" desc:"The replacement text"`
+}
+
+// EditFile returns a tool to safely replace unique chunks of text in a file. Marked Destructive.
+func EditFile(opts ...any) react.Tool {
+	cfg, toolOpts := parseOpts(opts)
+	defaultOpts := []react.ToolOption{react.Destructive()}
+	defaultOpts = append(defaultOpts, toolOpts...)
+
+	return react.NewTool("edit_file", "Perform a surgical search-and-replace of an exact text chunk in a file. old_string must appear exactly once.", func(ctx context.Context, in editFileInput) (string, error) {
+		target, err := resolvePath(cfg.baseDir, in.Path)
+		if err != nil {
+			return "", err
+		}
+		if in.OldString == "" {
+			return "", fmt.Errorf("old_string cannot be empty")
+		}
+
+		info, err := os.Stat(target)
+		if err != nil {
+			return "", err
+		}
+		perm := info.Mode().Perm()
+
+		contentBytes, err := os.ReadFile(target)
+		if err != nil {
+			return "", err
+		}
+		content := string(contentBytes)
+
+		count := strings.Count(content, in.OldString)
+		if count == 0 {
+			return "", fmt.Errorf("old_string not found in %s", target)
+		}
+		if count > 1 {
+			return "", fmt.Errorf("old_string matches %d occurrences in %s; must be uniquely identifiable", count, target)
+		}
+
+		updated := strings.Replace(content, in.OldString, in.NewString, 1)
+		if err := os.WriteFile(target, []byte(updated), perm); err != nil {
+			return "", fmt.Errorf("failed to write updated file: %w", err)
+		}
+		return fmt.Sprintf("Successfully edited %s", target), nil
 	}, defaultOpts...)
 }
 
@@ -62,15 +192,21 @@ type listDirInput struct {
 }
 
 // ListDir returns a tool to list directory entries. Marked ReadOnly.
-func ListDir(opts ...react.ToolOption) react.Tool {
+func ListDir(opts ...any) react.Tool {
+	cfg, toolOpts := parseOpts(opts)
 	defaultOpts := []react.ToolOption{react.ReadOnly()}
-	defaultOpts = append(defaultOpts, opts...)
+	defaultOpts = append(defaultOpts, toolOpts...)
+
 	return react.NewTool("list_dir", "List files and subdirectories in a directory path.", func(ctx context.Context, in listDirInput) (string, error) {
 		p := in.Path
 		if p == "" {
 			p = "."
 		}
-		entries, err := os.ReadDir(filepath.Clean(p))
+		target, err := resolvePath(cfg.baseDir, p)
+		if err != nil {
+			return "", err
+		}
+		entries, err := os.ReadDir(target)
 		if err != nil {
 			return "", err
 		}
@@ -94,9 +230,16 @@ type shellInput struct {
 }
 
 // Shell returns a tool to execute arbitrary bash/sh commands. Marked Destructive and Sequential.
-func Shell(opts ...react.ToolOption) react.Tool {
+func Shell(opts ...any) react.Tool {
+	cfg, toolOpts := parseOpts(opts)
 	defaultOpts := []react.ToolOption{react.Destructive(), react.Sequential()}
-	defaultOpts = append(defaultOpts, opts...)
+	defaultOpts = append(defaultOpts, toolOpts...)
+
+	timeout := cfg.timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
 	return react.NewTool("shell", "Execute a command in the system shell. Returns stdout and stderr.", func(ctx context.Context, in shellInput) (string, error) {
 		if strings.TrimSpace(in.Command) == "" {
 			return "", fmt.Errorf("command cannot be empty")
@@ -107,10 +250,13 @@ func Shell(opts ...react.ToolOption) react.Tool {
 			shell = "sh"
 		}
 
-		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		cctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
 		cmd := exec.CommandContext(cctx, shell, "-c", in.Command)
+		if cfg.workDir != "" {
+			cmd.Dir = cfg.workDir
+		}
 		var outBuf, errBuf bytes.Buffer
 		cmd.Stdout = &outBuf
 		cmd.Stderr = &errBuf
@@ -148,7 +294,18 @@ func All() []react.Tool {
 	return []react.Tool{
 		ReadFile(),
 		WriteFile(),
+		EditFile(),
 		ListDir(),
 		Shell(),
+	}
+}
+
+// NewFilesystem returns standard file tools confined to baseDir.
+func NewFilesystem(baseDir string) []react.Tool {
+	return []react.Tool{
+		ReadFile(WithBaseDir(baseDir)),
+		WriteFile(WithBaseDir(baseDir)),
+		EditFile(WithBaseDir(baseDir)),
+		ListDir(WithBaseDir(baseDir)),
 	}
 }

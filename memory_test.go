@@ -11,6 +11,38 @@ func TestInMemory(t *testing.T) {
 	runStoreTest(t, func() Store { return NewInMemory() })
 }
 
+func TestFileStore(t *testing.T) {
+	runStoreTest(t, func() Store {
+		fs, err := NewFileStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fs
+	})
+
+	dir := t.TempDir()
+	fs, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify persistence across new FileStore instance pointing to same dir
+	ctx := context.Background()
+	_ = fs.Append(ctx, "persisted-session", UserText("remember me"))
+	fs2, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := fs2.Load(ctx, "persisted-session")
+	if err != nil || len(msgs) != 1 || msgs[0].Text() != "remember me" {
+		t.Fatalf("persistence failed: got %v, err %v", msgs, err)
+	}
+	sessions := fs2.Sessions()
+	if len(sessions) == 0 {
+		t.Fatal("expected at least one session in Sessions()")
+	}
+}
+
 // runStoreTest exercises a Store implementation for conformance.
 func runStoreTest(t *testing.T, newStore func() Store) {
 	ctx := context.Background()
@@ -85,10 +117,12 @@ func runStoreTest(t *testing.T, newStore func() Store) {
 		s := newStore()
 		var wg sync.WaitGroup
 		for i := range 20 {
-			wg.Go(func() {
-				_ = s.Append(ctx, "c", UserText(fmt.Sprint(i)))
+			wg.Add(1)
+			go func(val int) {
+				defer wg.Done()
+				_ = s.Append(ctx, "c", UserText(fmt.Sprint(val)))
 				_, _ = s.Load(ctx, "c")
-			})
+			}(i)
 		}
 		wg.Wait()
 		got, _ := s.Load(ctx, "c")

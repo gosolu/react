@@ -249,7 +249,8 @@ Attach granular lifecycle hooks via `react.WithHooks(...)` to control prompts, t
 
 ```go
 agent, _ := react.New(
-    react.WithModel("claude-3-7-sonnet", provider),
+    react.WithProvider(provider),
+    react.WithModel("claude-3-7-sonnet"),
     react.WithTools(tools...),
     react.WithHooks(react.Hooks{
         // 1. Inspect or sanitize user prompts before agent processes them
@@ -289,6 +290,54 @@ agent, _ := react.New(
 
 ---
 
+## Structured Output
+
+Constrain model outputs to a typed Go struct using standard schema generation:
+
+```go
+type Analysis struct {
+    Summary    string   `json:"summary" desc:"Brief summary of findings"`
+    RiskScore  int      `json:"risk_score" desc:"Risk score from 1 to 10"`
+    Actionable []string `json:"actionable" desc:"Recommended next steps"`
+}
+
+analysis, res, err := react.RunStructured[Analysis](ctx, agent, "session-id", "Analyze recent incident report")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Risk: %d/10 - %s\n", analysis.RiskScore, analysis.Summary)
+```
+
+---
+
+## Persistent Storage & Confinement
+
+### File-Based Session Storage
+
+Persist conversation histories across process restarts using atomic writes:
+
+```go
+store, err := react.NewFileStore("./sessions")
+agent, err := react.New(
+    react.WithProvider(provider),
+    react.WithStore(store),
+)
+```
+
+### Confined Filesystem & Surgical Edits
+
+Restrict filesystem access to a target directory and perform exact surgical replacements:
+
+```go
+// Confine tools to a sandbox workspace
+tools := builtin.NewFilesystem("/path/to/workspace")
+
+// Or add surgical string replace tool
+editTool := builtin.EditFile(builtin.WithBaseDir("/path/to/workspace"))
+```
+
+---
+
 ## Sub-Agents (Agent-as-a-Tool)
 
 Delegate complex tasks to specialized child agents:
@@ -313,25 +362,34 @@ mainAgent, _ := react.New(
 
 ## Running the REPL CLI
 
-The built-in CLI supports OpenAI, Anthropic, and Mock providers:
+The built-in CLI supports OpenAI, Anthropic, DeepSeek, OpenCode, and Mock providers with session memory:
 
 ```bash
 # Using OpenAI (or compatible API)
 export OPENAI_API_KEY="your-api-key"
 go run ./cmd/react --provider openai --model gpt-4o
 
-# Using Ollama / LocalAI (OpenAI-compatible)
-go run ./cmd/react --provider openai --model llama3 --base-url http://localhost:11434/v1
+# Using DeepSeek (Chat or Reasoner with thinking display)
+export DEEPSEEK_API_KEY="your-api-key"
+go run ./cmd/react --provider deepseek --model deepseek-reasoner
+
+# Using OpenCode
+export OPENCODE_API_KEY="your-api-key"
+go run ./cmd/react --provider opencode --model deepseek-v4-pro
 
 # Using Anthropic
 export ANTHROPIC_API_KEY="your-api-key"
-go run ./cmd/react --provider anthropic --model claude-3-5-sonnet-20241022
+go run ./cmd/react --provider anthropic --model claude-3-7-sonnet-20250219
+
+# Persisting sessions across CLI runs
+go run ./cmd/react --provider mock --store-dir ./data/sessions
 
 # Offline testing with mock provider
 go run ./cmd/react --provider mock
 ```
 
-Interactive CLI commands:
+Interactive features:
+- Interactive permissions: Destructive tools prompt with `[y/N/a]`, where `a` remembers approval for the remainder of the session.
 - `/tools`: List registered tools
 - `/skills`: List available skills
 - `/reset`: Clear the active session history

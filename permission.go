@@ -3,6 +3,8 @@ package react
 import (
 	"context"
 	"path"
+	"strings"
+	"sync"
 )
 
 // PolicyDecision is a policy verdict.
@@ -64,17 +66,37 @@ type PermissionRules struct {
 
 func (r PermissionRules) Check(ctx context.Context, s ToolSpec, c ToolCall) PolicyDecision {
 	switch {
-	case match(r.Deny, s.Name):
+	case matchRules(r.Deny, s, c):
 		return PolicyDeny
-	case match(r.Ask, s.Name):
+	case matchRules(r.Ask, s, c):
 		return PolicyAsk
-	case match(r.Allow, s.Name):
+	case matchRules(r.Allow, s, c):
 		return PolicyAllow
 	}
 	if r.Fallback != nil {
 		return r.Fallback.Check(ctx, s, c)
 	}
 	return DefaultPermissionPolicy().Check(ctx, s, c)
+}
+
+func matchRules(patterns []string, s ToolSpec, c ToolCall) bool {
+	for _, p := range patterns {
+		if strings.Contains(p, "(") && strings.HasSuffix(p, ")") {
+			idx := strings.Index(p, "(")
+			toolPattern := p[:idx]
+			argPattern := strings.TrimSuffix(p[idx+1:], ")")
+			if match([]string{toolPattern}, s.Name) {
+				if ok, _ := path.Match(argPattern, string(c.Arguments)); ok || strings.Contains(string(c.Arguments), strings.Trim(argPattern, "*")) {
+					return true
+				}
+			}
+			continue
+		}
+		if match([]string{p}, s.Name) {
+			return true
+		}
+	}
+	return false
 }
 
 func match(patterns []string, name string) bool {
@@ -114,4 +136,63 @@ func AlwaysApprove() PermissionApprover {
 // AlwaysDeny denies everything.
 func AlwaysDeny() PermissionApprover {
 	return PermissionApproverFunc(func(context.Context, ApprovalRequest) (bool, error) { return false, nil })
+}
+
+// SessionRememberApprover wraps an approver and caches approvals for the duration of a session.
+type SessionRememberApprover struct {
+	inner    PermissionApprover
+	mu       sync.RWMutex
+	approved map[string]bool
+}
+
+// NewSessionRememberApprover returns an approver that remembers approved tools.
+func NewSessionRememberApprover(inner PermissionApprover) *SessionRememberApprover {
+	return &SessionRememberApprover{
+		inner:    inner,
+		approved: make(map[string]bool),
+	}
+}
+
+// Approve checks if the tool was previously remembered; if not, delegates to inner approver.
+func (a *SessionRememberApprover) Approve(ctx context.Context, req ApprovalRequest) (bool, error) {
+	rc := RunContextFrom(ctx)
+	name := req.Call.Name
+	if name == "" {
+		name = req.Spec.Name
+	}
+	key := name
+	if rc != nil && rc.SessionID != "" {
+		key = rc.SessionID + ":" + name
+	}
+
+	a.mu.RLock()
+	if a.approved[key] || a.approved[name] {
+		a.mu.RUnlock()
+		return true, nil
+	}
+	a.mu.RUnlock()
+
+	ok, err := a.inner.Approve(ctx, req)
+	if err != nil || !ok {
+		return false, err
+	}
+	return true, nil
+}
+
+// Remember caches future approvals for toolName across all sessions.
+func (a *SessionRememberApprover) Remember(toolName string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.approved[toolName] = true
+}
+
+// RememberForSession caches future approvals for toolName strictly within sessionID.
+func (a *SessionRememberApprover) RememberForSession(sessionID, toolName string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if sessionID != "" {
+		a.approved[sessionID+":"+toolName] = true
+	} else {
+		a.approved[toolName] = true
+	}
 }
