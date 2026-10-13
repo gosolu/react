@@ -155,3 +155,98 @@ func TestOpenAIFinishReasons(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenAIResponsesGenerate(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Errorf("path = %q, want /responses", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintln(w, `{
+			"id": "resp_test",
+			"status": "completed",
+			"output": [
+				{
+					"type": "message",
+					"role": "assistant",
+					"content": [{"type": "output_text", "text": "Hello from Responses API"}]
+				},
+				{
+					"type": "function_call",
+					"call_id": "call_1",
+					"name": "calc",
+					"arguments": "{\"x\":1}"
+				}
+			],
+			"usage": {
+				"input_tokens": 10,
+				"output_tokens": 20
+			}
+		}`)
+	}))
+	defer ts.Close()
+
+	p := openai.NewResponses(openai.Config{
+		APIKey:  "test-key",
+		BaseURL: ts.URL,
+	})
+
+	resp, err := p.Generate(context.Background(), &react.Request{
+		Model:    "gpt-4o",
+		Messages: []react.Message{react.UserText("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	if resp.Message.Text() != "Hello from Responses API" {
+		t.Fatalf("unexpected text: %q", resp.Message.Text())
+	}
+	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].Name != "calc" {
+		t.Fatalf("unexpected tool calls: %+v", resp.Message.ToolCalls)
+	}
+	if resp.StopReason != react.StopToolCall {
+		t.Fatalf("expected StopToolCall, got %v", resp.StopReason)
+	}
+}
+
+func TestOpenAIResponsesStream(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Errorf("path = %q, want /responses", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, `event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"Hi"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"!"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":2}}}
+
+data: [DONE]
+`)
+	}))
+	defer ts.Close()
+
+	p := openai.NewResponses(openai.Config{
+		APIKey:  "test-key",
+		BaseURL: ts.URL,
+	})
+
+	var acc react.Accumulator
+	for ev, err := range p.Stream(context.Background(), &react.Request{Model: "gpt-4o"}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		acc.Add(ev)
+	}
+
+	resp := acc.Response()
+	if resp.Message.Text() != "Hi!" {
+		t.Fatalf("text = %q, want 'Hi!'", resp.Message.Text())
+	}
+	if resp.StopReason != react.StopEnd {
+		t.Fatalf("stop = %v, want StopEnd", resp.StopReason)
+	}
+}

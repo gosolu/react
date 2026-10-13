@@ -13,9 +13,9 @@ Features a unified ReAct (Reasoning + Acting) loop with support for both streami
 - **Go 1.23+ Iterators:** Streaming exposes range-over-func iterators (`iter.Seq2[Event, error]`) with cancellation on break.
 - **Zero External Dependencies:** Built 100% on the Go standard library (no third-party dependencies required). Native HTTP clients, SSE parsers, and a built-in YAML frontmatter parser for skills.
 - **Provider Abstraction:**
-  - `provider/deepseek`: Native DeepSeek API client with vision (`deepseek-flash`) and reasoning (`deepseek-reasoner` / R1).
-  - `provider/opencode`: OpenCode Go curated model gateway with client User-Agent and session routing (`x-opencode-session`).
-  - `provider/openai`: Works with OpenAI and OpenAI-compatible endpoints (Ollama, vLLM, LocalAI, etc.).
+  - `provider/deepseek`: Native DeepSeek API client with vision (`deepseek-flash`), reasoning (`deepseek-reasoner` / R1), supporting both Chat Completions and Responses API (`/responses`).
+  - `provider/opencode`: OpenCode Go curated model gateway with client User-Agent and session routing (`x-opencode-session`), supporting both Chat Completions and Responses API.
+  - `provider/openai`: Works with OpenAI and OpenAI-compatible endpoints, supporting both standard Chat Completions and the new Responses API (`/responses`).
   - `provider/anthropic`: Anthropic Messages API.
   - `provider/mock`: Scripted provider for deterministic testing and offline development.
 - **Type-safe Tools:**

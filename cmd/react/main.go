@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/gosolu/react"
+	"github.com/gosolu/react/provider"
 	"github.com/gosolu/react/provider/anthropic"
 	"github.com/gosolu/react/provider/deepseek"
 	"github.com/gosolu/react/provider/mock"
@@ -21,6 +22,7 @@ import (
 
 func main() {
 	providerFlag := flag.String("provider", "mock", "LLM provider: openai | anthropic | deepseek | opencode | mock")
+	apiFlag := flag.String("api", "completions", "API protocol: completions | responses")
 	modelFlag := flag.String("model", "", "Model identifier (defaults to provider standard)")
 	baseURLFlag := flag.String("base-url", "", "Custom BaseURL (e.g. for Ollama / vLLM / local AI)")
 	streamFlag := flag.Bool("stream", true, "Enable streaming responses")
@@ -31,6 +33,11 @@ func main() {
 
 	var p react.Provider
 	model := *modelFlag
+
+	apiType := provider.APITypeChatCompletions
+	if strings.EqualFold(*apiFlag, "responses") {
+		apiType = provider.APITypeResponses
+	}
 
 	switch strings.ToLower(*providerFlag) {
 	case "openai":
@@ -44,6 +51,7 @@ func main() {
 		p = openai.New(openai.Config{
 			APIKey:  apiKey,
 			BaseURL: *baseURLFlag,
+			APIType: apiType,
 		})
 	case "anthropic":
 		apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -68,6 +76,7 @@ func main() {
 		p = deepseek.New(deepseek.Config{
 			APIKey:  apiKey,
 			BaseURL: *baseURLFlag,
+			APIType: apiType,
 		})
 	case "opencode", "opencode-go":
 		apiKey := os.Getenv("OPENCODE_API_KEY")
@@ -83,6 +92,7 @@ func main() {
 		p = opencode.New(opencode.Config{
 			APIKey:    apiKey,
 			BaseURL:   *baseURLFlag,
+			APIType:   apiType,
 			SessionID: *sessionFlag,
 		})
 	case "mock":

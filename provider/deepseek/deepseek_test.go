@@ -294,3 +294,99 @@ func TestDeepSeekFinishReasons(t *testing.T) {
 		})
 	}
 }
+
+func TestDeepSeekResponsesGenerate(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Errorf("path = %q, want /responses", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintln(w, `{
+			"id": "resp_ds_test",
+			"status": "completed",
+			"output": [
+				{
+					"type": "reasoning",
+					"content": [{"type": "reasoning_text", "text": "DeepSeek R1 thinking..."}]
+				},
+				{
+					"type": "message",
+					"role": "assistant",
+					"content": [{"type": "output_text", "text": "DeepSeek responses result"}]
+				}
+			],
+			"usage": {
+				"input_tokens": 8,
+				"output_tokens": 16
+			}
+		}`)
+	}))
+	defer ts.Close()
+
+	p := deepseek.NewResponses(deepseek.Config{
+		APIKey:  "test-key",
+		BaseURL: ts.URL,
+	})
+
+	resp, err := p.Generate(context.Background(), &react.Request{
+		Model:    deepseek.ModelFlash,
+		Messages: []react.Message{react.UserText("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	if resp.Message.Text() != "DeepSeek responses result" {
+		t.Fatalf("unexpected text: %q", resp.Message.Text())
+	}
+	if resp.Reasoning != "DeepSeek R1 thinking..." {
+		t.Fatalf("unexpected reasoning: %q", resp.Reasoning)
+	}
+	if resp.StopReason != react.StopEnd {
+		t.Fatalf("expected StopEnd, got %v", resp.StopReason)
+	}
+}
+
+func TestDeepSeekResponsesStream(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Errorf("path = %q, want /responses", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, `event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":"DeepSeek thought"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"Hello world"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":6,"output_tokens":10}}}
+
+data: [DONE]
+`)
+	}))
+	defer ts.Close()
+
+	p := deepseek.NewResponses(deepseek.Config{
+		APIKey:  "test-key",
+		BaseURL: ts.URL,
+	})
+
+	var acc react.Accumulator
+	for ev, err := range p.Stream(context.Background(), &react.Request{Model: deepseek.ModelReasoner}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		acc.Add(ev)
+	}
+
+	resp := acc.Response()
+	if resp.Message.Text() != "Hello world" {
+		t.Fatalf("text = %q, want 'Hello world'", resp.Message.Text())
+	}
+	if resp.Reasoning != "DeepSeek thought" {
+		t.Fatalf("reasoning = %q, want 'DeepSeek thought'", resp.Reasoning)
+	}
+	if resp.StopReason != react.StopEnd {
+		t.Fatalf("stop = %v, want StopEnd", resp.StopReason)
+	}
+}

@@ -509,3 +509,96 @@ func TestOpenCodeFinishReasons(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenCodeResponsesGenerate(t *testing.T) {
+	var capturedHeader http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeader = r.Header.Clone()
+		if r.URL.Path != "/responses" {
+			t.Errorf("path = %q, want /responses", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintln(w, `{
+			"id": "resp_oc_test",
+			"status": "completed",
+			"output": [
+				{
+					"type": "message",
+					"role": "assistant",
+					"content": [{"type": "output_text", "text": "OpenCode Responses output"}]
+				}
+			],
+			"usage": {
+				"input_tokens": 14,
+				"output_tokens": 7
+			}
+		}`)
+	}))
+	defer srv.Close()
+
+	p := NewResponses(Config{
+		APIKey:    "test-oc-key",
+		BaseURL:   srv.URL,
+		SessionID: "sess-resp-1",
+	})
+
+	resp, err := p.Generate(context.Background(), &react.Request{
+		Model:    ModelDeepSeekV4Pro,
+		Messages: []react.Message{react.UserText("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	if resp.Message.Text() != "OpenCode Responses output" {
+		t.Fatalf("unexpected text: %q", resp.Message.Text())
+	}
+	if capturedHeader.Get("User-Agent") != DefaultUserAgent {
+		t.Errorf("expected User-Agent %q, got %q", DefaultUserAgent, capturedHeader.Get("User-Agent"))
+	}
+	if capturedHeader.Get(HeaderSession) != "sess-resp-1" {
+		t.Errorf("expected x-opencode-session sess-resp-1, got %q", capturedHeader.Get(HeaderSession))
+	}
+}
+
+func TestOpenCodeResponsesStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Errorf("path = %q, want /responses", r.URL.Path)
+		}
+		if r.Header.Get(HeaderSession) != "sess-resp-stream" {
+			t.Errorf("expected x-opencode-session sess-resp-stream, got %q", r.Header.Get(HeaderSession))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, `event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"Streamed response"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":10,"output_tokens":5}}}
+
+data: [DONE]
+`)
+	}))
+	defer srv.Close()
+
+	p := NewResponses(Config{
+		APIKey:    "test-oc-key",
+		BaseURL:   srv.URL,
+		SessionID: "sess-resp-stream",
+	})
+
+	var acc react.Accumulator
+	for ev, err := range p.Stream(context.Background(), &react.Request{Model: ModelKimiK3}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		acc.Add(ev)
+	}
+
+	resp := acc.Response()
+	if resp.Message.Text() != "Streamed response" {
+		t.Fatalf("text = %q, want 'Streamed response'", resp.Message.Text())
+	}
+	if resp.StopReason != react.StopEnd {
+		t.Fatalf("stop = %v, want StopEnd", resp.StopReason)
+	}
+}

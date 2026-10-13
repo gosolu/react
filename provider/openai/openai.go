@@ -25,8 +25,9 @@ const DefaultBaseURL = "https://api.openai.com/v1"
 // Config configures the OpenAI provider.
 type Config struct {
 	APIKey      string
-	BaseURL     string       // defaults to DefaultBaseURL
-	HTTPClient  *http.Client // defaults to http.DefaultClient
+	BaseURL     string           // defaults to DefaultBaseURL
+	APIType     provider.APIType // defaults to provider.APITypeChatCompletions
+	HTTPClient  *http.Client     // defaults to http.DefaultClient
 	RetryPolicy provider.RetryPolicy
 	ExtraHeader map[string]string
 }
@@ -45,13 +46,64 @@ func New(cfg Config) *Provider {
 	return &Provider{cfg: cfg}
 }
 
+// NewResponses creates a new OpenAI provider configured to use the Responses API.
+func NewResponses(cfg Config) *Provider {
+	cfg.APIType = provider.APITypeResponses
+	return New(cfg)
+}
+
 // Name implements react.Provider.
 func (p *Provider) Name() string {
 	return "openai"
 }
 
+func (p *Provider) endpointURL() string {
+	if p.cfg.APIType == provider.APITypeResponses {
+		baseURL := strings.TrimSuffix(p.cfg.BaseURL, "/chat/completions")
+		if strings.HasSuffix(baseURL, "/responses") {
+			return baseURL
+		}
+		return baseURL + "/responses"
+	}
+	baseURL := strings.TrimSuffix(p.cfg.BaseURL, "/responses")
+	if strings.HasSuffix(baseURL, "/chat/completions") {
+		return baseURL
+	}
+	return baseURL + "/chat/completions"
+}
+
 // Generate implements react.Provider (non-streaming).
 func (p *Provider) Generate(ctx context.Context, req *react.Request) (*react.Response, error) {
+	if p.cfg.APIType == provider.APITypeResponses {
+		return p.generateResponses(ctx, req)
+	}
+	return p.generateChatCompletions(ctx, req)
+}
+
+func (p *Provider) generateResponses(ctx context.Context, req *react.Request) (*react.Response, error) {
+	bodyMap := provider.BuildResponsesRequestBody(req, false)
+	data, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, fmt.Errorf("openai: marshal responses request: %w", err)
+	}
+
+	resp, err := p.cfg.RetryPolicy.Do(ctx, p.cfg.HTTPClient, p.Name(), func(c context.Context) (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(c, http.MethodPost, p.endpointURL(), bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		p.setHeaders(httpReq)
+		return httpReq, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return provider.ParseResponsesResponse(resp.Body)
+}
+
+func (p *Provider) generateChatCompletions(ctx context.Context, req *react.Request) (*react.Response, error) {
 	bodyMap := p.buildRequestBody(req, false)
 	data, err := json.Marshal(bodyMap)
 	if err != nil {
@@ -59,7 +111,7 @@ func (p *Provider) Generate(ctx context.Context, req *react.Request) (*react.Res
 	}
 
 	resp, err := p.cfg.RetryPolicy.Do(ctx, p.cfg.HTTPClient, p.Name(), func(c context.Context) (*http.Request, error) {
-		httpReq, err := http.NewRequestWithContext(c, http.MethodPost, p.cfg.BaseURL+"/chat/completions", bytes.NewReader(data))
+		httpReq, err := http.NewRequestWithContext(c, http.MethodPost, p.endpointURL(), bytes.NewReader(data))
 		if err != nil {
 			return nil, err
 		}
@@ -107,6 +159,45 @@ func (p *Provider) Generate(ctx context.Context, req *react.Request) (*react.Res
 
 // Stream implements react.Provider (server-sent events).
 func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[react.StreamEvent, error] {
+	if p.cfg.APIType == provider.APITypeResponses {
+		return p.streamResponses(ctx, req)
+	}
+	return p.streamChatCompletions(ctx, req)
+}
+
+func (p *Provider) streamResponses(ctx context.Context, req *react.Request) iter.Seq2[react.StreamEvent, error] {
+	return func(yield func(react.StreamEvent, error) bool) {
+		bodyMap := provider.BuildResponsesRequestBody(req, true)
+		data, err := json.Marshal(bodyMap)
+		if err != nil {
+			yield(react.StreamEvent{}, fmt.Errorf("openai: marshal responses request: %w", err))
+			return
+		}
+
+		resp, err := p.cfg.RetryPolicy.Do(ctx, p.cfg.HTTPClient, p.Name(), func(c context.Context) (*http.Request, error) {
+			httpReq, err := http.NewRequestWithContext(c, http.MethodPost, p.endpointURL(), bytes.NewReader(data))
+			if err != nil {
+				return nil, err
+			}
+			p.setHeaders(httpReq)
+			httpReq.Header.Set("Accept", "text/event-stream")
+			return httpReq, nil
+		})
+		if err != nil {
+			yield(react.StreamEvent{}, err)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		for ev, err := range provider.StreamResponses(ctx, resp.Body) {
+			if !yield(ev, err) {
+				return
+			}
+		}
+	}
+}
+
+func (p *Provider) streamChatCompletions(ctx context.Context, req *react.Request) iter.Seq2[react.StreamEvent, error] {
 	return func(yield func(react.StreamEvent, error) bool) {
 		bodyMap := p.buildRequestBody(req, true)
 		data, err := json.Marshal(bodyMap)
@@ -116,7 +207,7 @@ func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[rea
 		}
 
 		resp, err := p.cfg.RetryPolicy.Do(ctx, p.cfg.HTTPClient, p.Name(), func(c context.Context) (*http.Request, error) {
-			httpReq, err := http.NewRequestWithContext(c, http.MethodPost, p.cfg.BaseURL+"/chat/completions", bytes.NewReader(data))
+			httpReq, err := http.NewRequestWithContext(c, http.MethodPost, p.endpointURL(), bytes.NewReader(data))
 			if err != nil {
 				return nil, err
 			}
