@@ -14,6 +14,7 @@ Features a unified ReAct (Reasoning + Acting) loop with support for both streami
 - **Zero External Dependencies:** Built 100% on the Go standard library (no third-party dependencies required). Native HTTP clients, SSE parsers, and a built-in YAML frontmatter parser for skills.
 - **Provider Abstraction:**
   - `provider/deepseek`: Native DeepSeek API client with vision (`deepseek-flash`) and reasoning (`deepseek-reasoner` / R1).
+  - `provider/opencode`: OpenCode Go curated model gateway with client User-Agent and session routing (`x-opencode-session`).
   - `provider/openai`: Works with OpenAI and OpenAI-compatible endpoints (Ollama, vLLM, LocalAI, etc.).
   - `provider/anthropic`: Anthropic Messages API.
   - `provider/mock`: Scripted provider for deterministic testing and offline development.
@@ -72,6 +73,7 @@ react/
     ├── anthropic/                                                # Anthropic Messages API client
     ├── deepseek/                                                 # DeepSeek API client (vision, chat, reasoner)
     ├── mock/                                                     # Scripted mock provider for testing
+    ├── opencode/                                                 # OpenCode Go gateway client (session & UA headers)
     └── openai/                                                   # OpenAI-compatible API client
 ```
 
