@@ -88,6 +88,17 @@ func BuildResponsesRequestBody(req *react.Request, stream bool) map[string]any {
 				"content": content,
 			})
 		case react.RoleAssistant:
+			if m.Reasoning != "" {
+				input = append(input, map[string]any{
+					"type": "reasoning",
+					"content": []map[string]any{
+						{
+							"type": "reasoning_text",
+							"text": m.Reasoning,
+						},
+					},
+				})
+			}
 			if m.Text() != "" || len(m.ToolCalls) == 0 {
 				input = append(input, map[string]any{
 					"role":    "assistant",
@@ -103,10 +114,40 @@ func BuildResponsesRequestBody(req *react.Request, stream bool) map[string]any {
 				})
 			}
 		case react.RoleTool:
+			var output any = m.Text()
+			var hasImages bool
+			for _, p := range m.Content {
+				if p.Type == react.PartImage {
+					hasImages = true
+					break
+				}
+			}
+			if hasImages {
+				var parts []map[string]any
+				for _, p := range m.Content {
+					switch p.Type {
+					case react.PartText:
+						parts = append(parts, map[string]any{
+							"type": "input_text",
+							"text": p.Text,
+						})
+					case react.PartImage:
+						url := p.ImageURL
+						if url == "" && len(p.Data) > 0 {
+							url = fmt.Sprintf("data:%s;base64,%s", p.MIMEType, base64.StdEncoding.EncodeToString(p.Data))
+						}
+						parts = append(parts, map[string]any{
+							"type":      "input_image",
+							"image_url": url,
+						})
+					}
+				}
+				output = parts
+			}
 			input = append(input, map[string]any{
 				"type":    "function_call_output",
 				"call_id": m.ToolCallID,
-				"output":  m.Text(),
+				"output":  output,
 			})
 		}
 	}
@@ -239,6 +280,7 @@ func ParseResponsesResponse(r io.Reader) (*react.Response, error) {
 	if text != "" {
 		msg.Content = []react.Part{react.TextPart(text)}
 	}
+	msg.Reasoning = reasoningBuilder.String()
 
 	stopReason := react.StopEnd
 	if len(msg.ToolCalls) > 0 {

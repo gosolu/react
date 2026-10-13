@@ -31,6 +31,7 @@ type Config struct {
 	HTTPClient  *http.Client // defaults to http.DefaultClient
 	RetryPolicy provider.RetryPolicy
 	ExtraHeader map[string]string
+	PromptCache bool // enables prompt caching breakpoints on system prompt and tools
 }
 
 // Provider implements react.Provider for the Anthropic Messages API.
@@ -86,6 +87,9 @@ func (p *Provider) Generate(ctx context.Context, req *react.Request) (*react.Res
 	}
 	for _, block := range msgResp.Content {
 		switch block.Type {
+		case "thinking":
+			msg.Reasoning = block.Thinking
+			msg.ReasoningSignature = block.Signature
 		case "text":
 			msg.Content = append(msg.Content, react.TextPart(block.Text))
 		case "tool_use":
@@ -99,10 +103,13 @@ func (p *Provider) Generate(ctx context.Context, req *react.Request) (*react.Res
 
 	return &react.Response{
 		Message:    msg,
+		Reasoning:  msg.Reasoning,
 		StopReason: mapStopReason(msgResp.StopReason),
 		Usage: react.Usage{
-			InputTokens:  msgResp.Usage.InputTokens,
-			OutputTokens: msgResp.Usage.OutputTokens,
+			InputTokens:      msgResp.Usage.InputTokens,
+			OutputTokens:     msgResp.Usage.OutputTokens,
+			CacheReadTokens:  msgResp.Usage.CacheReadInputTokens,
+			CacheWriteTokens: msgResp.Usage.CacheCreationInputTokens,
 		},
 	}, nil
 }
@@ -147,6 +154,8 @@ func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[rea
 				if json.Unmarshal([]byte(sse.Data), &start) == nil {
 					currentUsage.InputTokens = start.Message.Usage.InputTokens
 					currentUsage.OutputTokens = start.Message.Usage.OutputTokens
+					currentUsage.CacheReadTokens = start.Message.Usage.CacheReadInputTokens
+					currentUsage.CacheWriteTokens = start.Message.Usage.CacheCreationInputTokens
 					if !yield(react.StreamEvent{Type: react.StreamUsage, Usage: &currentUsage}, nil) {
 						return
 					}
@@ -171,6 +180,14 @@ func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[rea
 					switch delta.Delta.Type {
 					case "text_delta":
 						if !yield(react.StreamEvent{Type: react.StreamTextDelta, Text: delta.Delta.Text}, nil) {
+							return
+						}
+					case "thinking_delta":
+						if !yield(react.StreamEvent{Type: react.StreamReasoningDelta, Text: delta.Delta.Thinking}, nil) {
+							return
+						}
+					case "signature_delta":
+						if !yield(react.StreamEvent{Type: react.StreamReasoningDelta, Signature: delta.Delta.Signature}, nil) {
 							return
 						}
 					case "input_json_delta":
@@ -275,6 +292,16 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 			})
 		case react.RoleAssistant:
 			var content []map[string]any
+			if m.Reasoning != "" {
+				thinkingBlock := map[string]any{
+					"type":     "thinking",
+					"thinking": m.Reasoning,
+				}
+				if m.ReasoningSignature != "" {
+					thinkingBlock["signature"] = m.ReasoningSignature
+				}
+				content = append(content, thinkingBlock)
+			}
 			for _, part := range m.Content {
 				if part.Type == react.PartText && part.Text != "" {
 					content = append(content, map[string]any{"type": "text", "text": part.Text})
@@ -298,35 +325,97 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 			})
 		case react.RoleTool:
 			// In Anthropic, tool results go into a "user" turn with type="tool_result"
+			var resBody any = m.Text()
+			var hasImages bool
+			for _, p := range m.Content {
+				if p.Type == react.PartImage {
+					hasImages = true
+					break
+				}
+			}
+			if hasImages {
+				var parts []map[string]any
+				for _, p := range m.Content {
+					switch p.Type {
+					case react.PartText:
+						parts = append(parts, map[string]any{"type": "text", "text": p.Text})
+					case react.PartImage:
+						mediaType := p.MIMEType
+						if mediaType == "" {
+							mediaType = "image/jpeg"
+						}
+						var b64Data string
+						if len(p.Data) > 0 {
+							b64Data = base64.StdEncoding.EncodeToString(p.Data)
+						}
+						parts = append(parts, map[string]any{
+							"type": "image",
+							"source": map[string]any{
+								"type":       "base64",
+								"media_type": mediaType,
+								"data":       b64Data,
+							},
+						})
+					}
+				}
+				resBody = parts
+			}
+
 			resContent := map[string]any{
 				"type":        "tool_result",
 				"tool_use_id": m.ToolCallID,
-				"content":     m.Text(),
+				"content":     resBody,
 				"is_error":    m.IsError,
 			}
-			// Append or collapse with previous user turn if consecutive
-			messages = append(messages, map[string]any{
-				"role":    "user",
-				"content": []map[string]any{resContent},
-			})
+			// Collapse with previous user turn if consecutive
+			if len(messages) > 0 && messages[len(messages)-1]["role"] == "user" {
+				if cList, ok := messages[len(messages)-1]["content"].([]map[string]any); ok {
+					messages[len(messages)-1]["content"] = append(cList, resContent)
+				} else {
+					messages = append(messages, map[string]any{
+						"role":    "user",
+						"content": []map[string]any{resContent},
+					})
+				}
+			} else {
+				messages = append(messages, map[string]any{
+					"role":    "user",
+					"content": []map[string]any{resContent},
+				})
+			}
 		}
 	}
 
 	if len(systemParts) > 0 {
-		body["system"] = strings.Join(systemParts, "\n\n")
+		sysText := strings.Join(systemParts, "\n\n")
+		if p.cfg.PromptCache {
+			body["system"] = []map[string]any{
+				{
+					"type":          "text",
+					"text":          sysText,
+					"cache_control": map[string]string{"type": "ephemeral"},
+				},
+			}
+		} else {
+			body["system"] = sysText
+		}
 	}
 	body["messages"] = messages
 
 	if len(req.Tools) > 0 {
 		var tools []map[string]any
-		for _, t := range req.Tools {
+		for i, t := range req.Tools {
 			var schema map[string]any
 			_ = json.Unmarshal(t.InputSchema, &schema)
-			tools = append(tools, map[string]any{
+			toolObj := map[string]any{
 				"name":         t.Name,
 				"description":  t.Description,
 				"input_schema": schema,
-			})
+			}
+			if p.cfg.PromptCache && i == len(req.Tools)-1 {
+				toolObj["cache_control"] = map[string]string{"type": "ephemeral"}
+			}
+			tools = append(tools, toolObj)
 		}
 		body["tools"] = tools
 
@@ -372,17 +461,21 @@ type messagesResponse struct {
 	Content    []contentBlock `json:"content"`
 	StopReason string         `json:"stop_reason"`
 	Usage      struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	} `json:"usage"`
 }
 
 type contentBlock struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text,omitempty"`
-	ID    string          `json:"id,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
 }
 
 type messageStartEvent struct {
@@ -399,6 +492,8 @@ type contentBlockDeltaEvent struct {
 	Delta struct {
 		Type        string `json:"type"`
 		Text        string `json:"text,omitempty"`
+		Thinking    string `json:"thinking,omitempty"`
+		Signature   string `json:"signature,omitempty"`
 		PartialJSON string `json:"partial_json,omitempty"`
 	} `json:"delta"`
 }

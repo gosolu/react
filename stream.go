@@ -28,6 +28,7 @@ const (
 type StreamEvent struct {
 	Type       StreamEventType
 	Text       string
+	Signature  string // cryptographic signature for reasoning (Anthropic)
 	Index      int
 	ToolCallID string
 	ToolName   string
@@ -44,12 +45,13 @@ type toolAcc struct {
 // Accumulator folds a sequence of StreamEvents into a Response.
 // The zero value is ready to use.
 type Accumulator struct {
-	text      strings.Builder
-	reasoning strings.Builder
-	calls     []*toolAcc
-	byIndex   map[int]*toolAcc
-	usage     Usage
-	stop      StopReason
+	text         strings.Builder
+	reasoning    strings.Builder
+	reasoningSig strings.Builder
+	calls        []*toolAcc
+	byIndex      map[int]*toolAcc
+	usage        Usage
+	stop         StopReason
 }
 
 // Add applies an event.
@@ -59,6 +61,9 @@ func (a *Accumulator) Add(ev StreamEvent) {
 		a.text.WriteString(ev.Text)
 	case StreamReasoningDelta:
 		a.reasoning.WriteString(ev.Text)
+		if ev.Signature != "" {
+			a.reasoningSig.WriteString(ev.Signature)
+		}
 	case StreamToolCallStart:
 		c := a.call(ev.Index)
 		if ev.ToolCallID != "" {
@@ -77,6 +82,12 @@ func (a *Accumulator) Add(ev StreamEvent) {
 			}
 			if ev.Usage.OutputTokens > 0 {
 				a.usage.OutputTokens = ev.Usage.OutputTokens
+			}
+			if ev.Usage.CacheReadTokens > 0 {
+				a.usage.CacheReadTokens = ev.Usage.CacheReadTokens
+			}
+			if ev.Usage.CacheWriteTokens > 0 {
+				a.usage.CacheWriteTokens = ev.Usage.CacheWriteTokens
 			}
 		}
 	case StreamDone:
@@ -104,7 +115,11 @@ func (a *Accumulator) Text() string { return a.text.String() }
 
 // Response builds the final response.
 func (a *Accumulator) Response() *Response {
-	msg := Message{Role: RoleAssistant}
+	msg := Message{
+		Role:               RoleAssistant,
+		Reasoning:          a.reasoning.String(),
+		ReasoningSignature: a.reasoningSig.String(),
+	}
 	if t := a.text.String(); t != "" {
 		msg.Content = []Part{TextPart(t)}
 	}

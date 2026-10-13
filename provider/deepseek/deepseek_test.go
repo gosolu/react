@@ -390,3 +390,89 @@ data: [DONE]
 		t.Fatalf("stop = %v, want StopEnd", resp.StopReason)
 	}
 }
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestDeepSeekCachedTokensAndReasoningPersistence(t *testing.T) {
+	var capturedBody map[string]any
+
+	mockClient := &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+			respJSON := `{
+				"choices": [{
+					"message": {
+						"content": "Answer",
+						"reasoning_content": "DeepSeek thought process"
+					},
+					"finish_reason": "stop"
+				}],
+				"usage": {
+					"prompt_tokens": 150,
+					"completion_tokens": 40,
+					"prompt_cache_hit_tokens": 100,
+					"prompt_cache_miss_tokens": 50
+				}
+			}`
+			return &http.Response{
+				StatusCode: 200,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(respJSON)),
+			}, nil
+		}),
+	}
+
+	p := deepseek.New(deepseek.Config{
+		APIKey:     "test-key",
+		HTTPClient: mockClient,
+	})
+
+	req := &react.Request{
+		Model: deepseek.ModelReasoner,
+		Messages: []react.Message{
+			react.UserText("solve this"),
+			{
+				Role:      react.RoleAssistant,
+				Reasoning: "Prior reasoning step",
+				ToolCalls: []react.ToolCall{
+					{ID: "c1", Name: "solve", Arguments: []byte(`{}`)},
+				},
+			},
+			{
+				Role:       react.RoleTool,
+				ToolCallID: "c1",
+				Content:    []react.Part{react.TextPart("output 1")},
+			},
+		},
+	}
+
+	resp, err := p.Generate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	// 1. Verify response captured reasoning and cache metrics
+	if resp.Message.Reasoning != "DeepSeek thought process" {
+		t.Errorf("expected Reasoning 'DeepSeek thought process', got %q", resp.Message.Reasoning)
+	}
+	if resp.Reasoning != "DeepSeek thought process" {
+		t.Errorf("expected resp.Reasoning 'DeepSeek thought process', got %q", resp.Reasoning)
+	}
+	if resp.Usage.CacheReadTokens != 100 || resp.Usage.CacheWriteTokens != 50 {
+		t.Errorf("expected cache tokens 100/50, got %+v", resp.Usage)
+	}
+
+	// 2. Verify request body included reasoning_content for assistant
+	messages, ok := capturedBody["messages"].([]any)
+	if !ok || len(messages) != 3 {
+		t.Fatalf("expected 3 messages, got %+v", capturedBody["messages"])
+	}
+	asst := messages[1].(map[string]any)
+	if asst["reasoning_content"] != "Prior reasoning step" {
+		t.Errorf("expected reasoning_content on assistant, got %v", asst["reasoning_content"])
+	}
+}

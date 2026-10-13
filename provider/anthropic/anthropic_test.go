@@ -2,7 +2,9 @@ package anthropic_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -121,5 +123,199 @@ data: {"type":"message_stop"}
 	}
 	if resp.Usage.InputTokens != 20 || resp.Usage.OutputTokens != 12 {
 		t.Fatalf("usage = %+v", resp.Usage)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestAnthropicThinkingAndTurnCollapse(t *testing.T) {
+	var capturedBody map[string]any
+
+	mockClient := &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+			respJSON := `{
+				"id": "msg_456",
+				"type": "message",
+				"role": "assistant",
+				"content": [
+					{"type": "thinking", "thinking": "Thinking step 1", "signature": "sig_abc"},
+					{"type": "text", "text": "Done."}
+				],
+				"stop_reason": "end_turn",
+				"usage": {
+					"input_tokens": 100,
+					"output_tokens": 50,
+					"cache_creation_input_tokens": 40,
+					"cache_read_input_tokens": 60
+				}
+			}`
+			return &http.Response{
+				StatusCode: 200,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(respJSON)),
+			}, nil
+		}),
+	}
+
+	p := anthropic.New(anthropic.Config{
+		APIKey:     "ant-key",
+		HTTPClient: mockClient,
+	})
+
+	// Send an assistant message with thinking + 2 tool calls, followed by 2 tool results (one with an image)
+	req := &react.Request{
+		Model: "claude-3-7-sonnet",
+		Messages: []react.Message{
+			react.UserText("look at this"),
+			{
+				Role:               react.RoleAssistant,
+				Reasoning:          "Prior thought",
+				ReasoningSignature: "sig_123",
+				ToolCalls: []react.ToolCall{
+					{ID: "c1", Name: "t1", Arguments: []byte(`{}`)},
+					{ID: "c2", Name: "t2", Arguments: []byte(`{}`)},
+				},
+			},
+			{
+				Role:       react.RoleTool,
+				ToolCallID: "c1",
+				Content:    []react.Part{react.TextPart("result 1")},
+			},
+			{
+				Role:       react.RoleTool,
+				ToolCallID: "c2",
+				Content: []react.Part{
+					react.TextPart("screenshot:"),
+					react.ImageDataPart("image/png", []byte("fake-png-data")),
+				},
+			},
+		},
+	}
+
+	resp, err := p.Generate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	// 1. Verify response captured thinking and cache tokens
+	if resp.Message.Reasoning != "Thinking step 1" {
+		t.Errorf("expected Reasoning 'Thinking step 1', got %q", resp.Message.Reasoning)
+	}
+	if resp.Message.ReasoningSignature != "sig_abc" {
+		t.Errorf("expected Signature 'sig_abc', got %q", resp.Message.ReasoningSignature)
+	}
+	if resp.Usage.CacheWriteTokens != 40 || resp.Usage.CacheReadTokens != 60 {
+		t.Errorf("expected cache tokens 40/60, got %+v", resp.Usage)
+	}
+
+	// 2. Verify request body formatting
+	messages, ok := capturedBody["messages"].([]any)
+	if !ok {
+		t.Fatalf("messages not a slice: %T", capturedBody["messages"])
+	}
+
+	// Should have exactly 3 messages: user, assistant, user (the 2 tool results collapsed into 1 user message!)
+	if len(messages) != 3 {
+		t.Fatalf("expected 3 collapsed messages, got %d", len(messages))
+	}
+
+	// Check assistant turn: thinking block must precede tool_use
+	asstMsg := messages[1].(map[string]any)
+	if asstMsg["role"] != "assistant" {
+		t.Errorf("expected assistant role, got %v", asstMsg["role"])
+	}
+	asstContent := asstMsg["content"].([]any)
+	if len(asstContent) < 3 {
+		t.Fatalf("expected at least 3 blocks (thinking + 2 tool_use), got %d", len(asstContent))
+	}
+	firstBlock := asstContent[0].(map[string]any)
+	if firstBlock["type"] != "thinking" || firstBlock["thinking"] != "Prior thought" || firstBlock["signature"] != "sig_123" {
+		t.Errorf("expected first block to be thinking block with signature, got %+v", firstBlock)
+	}
+
+	// Check collapsed user turn: should have both tool results in one message
+	userToolMsg := messages[2].(map[string]any)
+	if userToolMsg["role"] != "user" {
+		t.Errorf("expected user role for tool results, got %v", userToolMsg["role"])
+	}
+	toolResults := userToolMsg["content"].([]any)
+	if len(toolResults) != 2 {
+		t.Fatalf("expected 2 tool_results in single user turn, got %d", len(toolResults))
+	}
+
+	// Check second tool result has image block
+	secondRes := toolResults[1].(map[string]any)
+	if secondRes["tool_use_id"] != "c2" {
+		t.Errorf("expected tool_use_id c2, got %v", secondRes["tool_use_id"])
+	}
+	secondContent, ok := secondRes["content"].([]any)
+	if !ok || len(secondContent) != 2 {
+		t.Fatalf("expected multimodal content array with 2 parts, got %+v", secondRes["content"])
+	}
+	imgBlock := secondContent[1].(map[string]any)
+	if imgBlock["type"] != "image" {
+		t.Errorf("expected image block, got %v", imgBlock["type"])
+	}
+}
+
+func TestAnthropicPromptCache(t *testing.T) {
+	var capturedBody map[string]any
+
+	mockClient := &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+			respJSON := `{"id":"m1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}]}`
+			return &http.Response{
+				StatusCode: 200,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(respJSON)),
+			}, nil
+		}),
+	}
+
+	p := anthropic.New(anthropic.Config{
+		APIKey:      "ant-key",
+		PromptCache: true,
+		HTTPClient:  mockClient,
+	})
+
+	req := &react.Request{
+		Model:    "claude-3-5-sonnet",
+		System:   "You are an assistant.",
+		Messages: []react.Message{react.UserText("hello")},
+		Tools: []react.ToolSpec{
+			{Name: "tool1", Description: "d1"},
+			{Name: "tool2", Description: "d2"},
+		},
+	}
+
+	_, err := p.Generate(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// System should have cache_control
+	sysBlocks, ok := capturedBody["system"].([]any)
+	if !ok || len(sysBlocks) == 0 {
+		t.Fatalf("expected system array with cache_control, got %+v", capturedBody["system"])
+	}
+	sysFirst := sysBlocks[0].(map[string]any)
+	if sysFirst["cache_control"] == nil {
+		t.Errorf("expected system cache_control, got nil")
+	}
+
+	// Last tool should have cache_control
+	tools, ok := capturedBody["tools"].([]any)
+	if !ok || len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %+v", capturedBody["tools"])
+	}
+	tool2 := tools[1].(map[string]any)
+	if tool2["cache_control"] == nil {
+		t.Errorf("expected last tool to have cache_control, got nil")
 	}
 }

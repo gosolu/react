@@ -151,8 +151,9 @@ func (p *Provider) generateChatCompletions(ctx context.Context, req *react.Reque
 		Message:    msg,
 		StopReason: mapFinishReason(choice.FinishReason),
 		Usage: react.Usage{
-			InputTokens:  chatResp.Usage.PromptTokens,
-			OutputTokens: chatResp.Usage.CompletionTokens,
+			InputTokens:     chatResp.Usage.PromptTokens,
+			OutputTokens:    chatResp.Usage.CompletionTokens,
+			CacheReadTokens: chatResp.Usage.PromptTokensDetails.CachedTokens,
 		},
 	}, nil
 }
@@ -238,9 +239,14 @@ func (p *Provider) streamChatCompletions(ctx context.Context, req *react.Request
 				continue
 			}
 			if chunk.Usage != nil {
+				cached := 0
+				if chunk.Usage.PromptTokensDetails != nil {
+					cached = chunk.Usage.PromptTokensDetails.CachedTokens
+				}
 				u := react.Usage{
-					InputTokens:  chunk.Usage.PromptTokens,
-					OutputTokens: chunk.Usage.CompletionTokens,
+					InputTokens:     chunk.Usage.PromptTokens,
+					OutputTokens:    chunk.Usage.CompletionTokens,
+					CacheReadTokens: cached,
 				}
 				if !yield(react.StreamEvent{Type: react.StreamUsage, Usage: &u}, nil) {
 					return
@@ -370,6 +376,9 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 				"role":    "assistant",
 				"content": m.Text(),
 			}
+			if m.Reasoning != "" {
+				msgObj["reasoning_content"] = m.Reasoning
+			}
 			if len(m.ToolCalls) > 0 {
 				var tcs []map[string]any
 				for _, tc := range m.ToolCalls {
@@ -386,10 +395,39 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 			}
 			messages = append(messages, msgObj)
 		case react.RoleTool:
+			var toolContent any = m.Text()
+			var hasImages bool
+			for _, p := range m.Content {
+				if p.Type == react.PartImage {
+					hasImages = true
+					break
+				}
+			}
+			if hasImages {
+				var parts []map[string]any
+				for _, p := range m.Content {
+					switch p.Type {
+					case react.PartText:
+						parts = append(parts, map[string]any{"type": "text", "text": p.Text})
+					case react.PartImage:
+						url := p.ImageURL
+						if url == "" && len(p.Data) > 0 {
+							url = fmt.Sprintf("data:%s;base64,%s", p.MIMEType, base64.StdEncoding.EncodeToString(p.Data))
+						}
+						parts = append(parts, map[string]any{
+							"type": "image_url",
+							"image_url": map[string]string{
+								"url": url,
+							},
+						})
+					}
+				}
+				toolContent = parts
+			}
 			messages = append(messages, map[string]any{
 				"role":         "tool",
 				"tool_call_id": m.ToolCallID,
-				"content":      m.Text(),
+				"content":      toolContent,
 			})
 		}
 	}
@@ -459,8 +497,11 @@ type chatCompletionResponse struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		PromptTokensDetails struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }
 
@@ -480,7 +521,10 @@ type chatCompletionChunk struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		PromptTokensDetails *struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }

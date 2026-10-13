@@ -57,6 +57,11 @@ type Message struct {
 	Role    Role   `json:"role"`
 	Content []Part `json:"content,omitempty"`
 
+	// Reasoning is model reasoning/thinking text (DeepSeek reasoner, Claude extended thinking, etc.).
+	Reasoning string `json:"reasoning,omitempty"`
+	// ReasoningSignature holds the provider-specific cryptographic signature (e.g. Anthropic).
+	ReasoningSignature string `json:"reasoning_signature,omitempty"`
+
 	// ToolCalls is set on assistant messages that request tool execution.
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 

@@ -23,6 +23,14 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 		return nil, errors.New("agent: empty input")
 	}
 
+	if sessionID != "" {
+		unlock, lerr := a.lockSession(ctx, sessionID)
+		if lerr != nil {
+			return nil, lerr
+		}
+		defer unlock()
+	}
+
 	rc := &RunContext{AgentName: a.cfg.name, SessionID: sessionID, RunID: newID(), Depth: depth}
 	var emitMu sync.Mutex
 	emit := func(ev Event) bool {
@@ -166,6 +174,9 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 
 		msg := resp.Message
 		msg.Role = RoleAssistant
+		if msg.Reasoning == "" && resp.Reasoning != "" {
+			msg.Reasoning = resp.Reasoning
+		}
 		for i := range msg.ToolCalls {
 			if msg.ToolCalls[i].ID == "" {
 				msg.ToolCalls[i].ID = fmt.Sprintf("call_%s_%d_%d", rc.RunID[:8], turn, i)

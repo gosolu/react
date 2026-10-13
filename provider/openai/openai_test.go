@@ -2,7 +2,9 @@ package openai_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -248,5 +250,105 @@ data: [DONE]
 	}
 	if resp.StopReason != react.StopEnd {
 		t.Fatalf("stop = %v, want StopEnd", resp.StopReason)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestOpenAICachedTokensAndMultimodalToolResult(t *testing.T) {
+	var capturedBody map[string]any
+
+	mockClient := &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+			respJSON := `{
+				"choices": [{
+					"message": {"content": "ok"},
+					"finish_reason": "stop"
+				}],
+				"usage": {
+					"prompt_tokens": 120,
+					"completion_tokens": 30,
+					"prompt_tokens_details": {
+						"cached_tokens": 80
+					}
+				}
+			}`
+			return &http.Response{
+				StatusCode: 200,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(respJSON)),
+			}, nil
+		}),
+	}
+
+	p := openai.New(openai.Config{
+		APIKey:     "test-key",
+		HTTPClient: mockClient,
+	})
+
+	req := &react.Request{
+		Model: "gpt-4o",
+		Messages: []react.Message{
+			react.UserText("look at this"),
+			{
+				Role:      react.RoleAssistant,
+				Reasoning: "OpenAI reasoning content",
+				ToolCalls: []react.ToolCall{
+					{ID: "c1", Name: "browse", Arguments: []byte(`{}`)},
+				},
+			},
+			{
+				Role:       react.RoleTool,
+				ToolCallID: "c1",
+				Content: []react.Part{
+					react.TextPart("page loaded:"),
+					react.ImageDataPart("image/png", []byte("fake-png-data")),
+				},
+			},
+		},
+	}
+
+	resp, err := p.Generate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	// Verify cached tokens extracted into Usage.CacheReadTokens
+	if resp.Usage.CacheReadTokens != 80 {
+		t.Errorf("expected 80 cached tokens, got %d", resp.Usage.CacheReadTokens)
+	}
+	if resp.Usage.InputTokens != 120 || resp.Usage.OutputTokens != 30 {
+		t.Errorf("expected 120/30 tokens, got %+v", resp.Usage)
+	}
+
+	// Verify request body formatting
+	messages, ok := capturedBody["messages"].([]any)
+	if !ok || len(messages) != 3 {
+		t.Fatalf("expected 3 messages, got %+v", capturedBody["messages"])
+	}
+
+	// Assistant message has reasoning_content
+	asst := messages[1].(map[string]any)
+	if asst["reasoning_content"] != "OpenAI reasoning content" {
+		t.Errorf("expected reasoning_content on assistant, got %v", asst["reasoning_content"])
+	}
+
+	// Tool message has multimodal parts
+	toolMsg := messages[2].(map[string]any)
+	if toolMsg["role"] != "tool" {
+		t.Errorf("expected role tool, got %v", toolMsg["role"])
+	}
+	toolParts, ok := toolMsg["content"].([]any)
+	if !ok || len(toolParts) != 2 {
+		t.Fatalf("expected 2 parts in tool content, got %+v", toolMsg["content"])
+	}
+	imgPart := toolParts[1].(map[string]any)
+	if imgPart["type"] != "image_url" {
+		t.Errorf("expected type image_url, got %v", imgPart["type"])
 	}
 }

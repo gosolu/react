@@ -32,6 +32,9 @@ func EstimateTokens(m Message) int {
 	for _, c := range m.ToolCalls {
 		n += (len(c.Name) + len(c.Arguments)) / 4
 	}
+	if len(m.Reasoning) > 0 {
+		n += len(m.Reasoning) / 4
+	}
 	return n
 }
 

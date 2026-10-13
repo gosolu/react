@@ -33,8 +33,10 @@ type Agent struct {
 	hooks      HookChain
 	plugins    []Plugin
 
-	approvalMu sync.Mutex
-	closeOnce  sync.Once
+	approvalMu   sync.Mutex
+	sessionMu    sync.Mutex
+	sessionGates map[string]chan struct{}
+	closeOnce    sync.Once
 }
 
 // New builds an agent, initialising plugins and loading skills.
@@ -127,6 +129,30 @@ func (a *Agent) Memory() Store { return a.cfg.store }
 
 // Store returns the session store (alias for Memory).
 func (a *Agent) Store() Store { return a.cfg.store }
+
+// lockSession acquires an exclusive gate for sessionID that respects context cancellation.
+func (a *Agent) lockSession(ctx context.Context, id string) (func(), error) {
+	if id == "" {
+		return func() {}, nil
+	}
+	a.sessionMu.Lock()
+	if a.sessionGates == nil {
+		a.sessionGates = make(map[string]chan struct{})
+	}
+	gate, ok := a.sessionGates[id]
+	if !ok {
+		gate = make(chan struct{}, 1)
+		a.sessionGates[id] = gate
+	}
+	a.sessionMu.Unlock()
+
+	select {
+	case gate <- struct{}{}:
+		return func() { <-gate }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
 // Close releases plugin resources (in reverse order). It is idempotent.
 func (a *Agent) Close() error {

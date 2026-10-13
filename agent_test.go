@@ -263,3 +263,147 @@ func TestStreamBreakCancellation(t *testing.T) {
 	// Verify no hang or leak
 	time.Sleep(10 * time.Millisecond)
 }
+
+func TestAgentSessionConcurrency(t *testing.T) {
+	p := mock.New(
+		mock.Text("response 1"),
+		mock.Text("response 2"),
+		mock.Text("response 3"),
+		mock.Text("response 4"),
+		mock.Text("response 5"),
+	)
+
+	a, err := New(
+		WithProvider(p),
+		WithStore(NewInMemory()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 5
+	errCh := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func(idx int) {
+			_, err := a.Run(context.Background(), "concurrent-session", "hello")
+			errCh <- err
+		}(i)
+	}
+
+	for i := 0; i < n; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("concurrent Run failed: %v", err)
+		}
+	}
+
+	history, err := a.Store().Load(context.Background(), "concurrent-session")
+	if err != nil {
+		t.Fatalf("load history failed: %v", err)
+	}
+	// Each run should append exactly 1 user message and 1 assistant message in order:
+	// Total messages = 2 * n = 10.
+	if len(history) != 2*n {
+		t.Fatalf("expected %d messages, got %d", 2*n, len(history))
+	}
+	for i := 0; i < len(history); i += 2 {
+		if history[i].Role != RoleUser {
+			t.Errorf("msg %d expected RoleUser, got %s", i, history[i].Role)
+		}
+		if history[i+1].Role != RoleAssistant {
+			t.Errorf("msg %d expected RoleAssistant, got %s", i+1, history[i+1].Role)
+		}
+	}
+}
+
+func TestAgentReasoningPersistence(t *testing.T) {
+	add, _ := setupTestTools()
+	p := mock.New(
+		mock.Step{
+			Response: &Response{
+				Message: Message{
+					Role: RoleAssistant,
+					ToolCalls: []ToolCall{
+						mock.Call("add", `{"a": 1, "b": 2}`),
+					},
+				},
+				Reasoning:  "Step 1: compute 1+2",
+				StopReason: StopToolCall,
+			},
+		},
+		mock.Step{
+			Response: &Response{
+				Message: Message{
+					Role:    RoleAssistant,
+					Content: []Part{TextPart("3")},
+				},
+				Reasoning:  "Step 2: final answer is 3",
+				StopReason: StopEnd,
+			},
+		},
+	)
+
+	a, err := New(
+		WithProvider(p),
+		WithTools(add),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := a.Run(context.Background(), "reasoning-session", "compute 1+2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Output != "3" {
+		t.Fatalf("expected 3, got %q", res.Output)
+	}
+
+	history, err := a.Store().Load(context.Background(), "reasoning-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Turn 1 assistant message should have Reasoning preserved:
+	var foundAssistantReasoning bool
+	for _, m := range history {
+		if m.Role == RoleAssistant && m.Reasoning == "Step 1: compute 1+2" {
+			foundAssistantReasoning = true
+			break
+		}
+	}
+	if !foundAssistantReasoning {
+		t.Fatal("expected assistant message in history to preserve Reasoning")
+	}
+}
+
+func TestUsageCacheTokens(t *testing.T) {
+	u1 := Usage{
+		InputTokens:      100,
+		OutputTokens:     50,
+		CacheReadTokens:  40,
+		CacheWriteTokens: 10,
+	}
+	u2 := Usage{
+		InputTokens:      200,
+		OutputTokens:     80,
+		CacheReadTokens:  60,
+		CacheWriteTokens: 20,
+	}
+	u1.Add(u2)
+
+	if u1.InputTokens != 300 {
+		t.Errorf("expected 300 input tokens, got %d", u1.InputTokens)
+	}
+	if u1.OutputTokens != 130 {
+		t.Errorf("expected 130 output tokens, got %d", u1.OutputTokens)
+	}
+	if u1.CacheReadTokens != 100 {
+		t.Errorf("expected 100 cache read tokens, got %d", u1.CacheReadTokens)
+	}
+	if u1.CacheWriteTokens != 30 {
+		t.Errorf("expected 30 cache write tokens, got %d", u1.CacheWriteTokens)
+	}
+	if u1.Total() != 430 {
+		t.Errorf("expected 430 total tokens, got %d", u1.Total())
+	}
+}

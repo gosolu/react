@@ -216,6 +216,7 @@ func (p *Provider) generateChatCompletions(ctx context.Context, req *react.Reque
 		})
 	}
 
+	msg.Reasoning = choice.Message.ReasoningContent
 	return &react.Response{
 		Message:    msg,
 		Reasoning:  choice.Message.ReasoningContent,
@@ -460,6 +461,9 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 				"role":    "assistant",
 				"content": m.Text(),
 			}
+			if m.Reasoning != "" {
+				msgObj["reasoning_content"] = m.Reasoning
+			}
 			if len(m.ToolCalls) > 0 {
 				var tcs []map[string]any
 				for _, tc := range m.ToolCalls {
@@ -476,10 +480,39 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 			}
 			messages = append(messages, msgObj)
 		case react.RoleTool:
+			var toolContent any = m.Text()
+			var hasImages bool
+			for _, p := range m.Content {
+				if p.Type == react.PartImage {
+					hasImages = true
+					break
+				}
+			}
+			if hasImages {
+				var parts []map[string]any
+				for _, p := range m.Content {
+					switch p.Type {
+					case react.PartText:
+						parts = append(parts, map[string]any{"type": "text", "text": p.Text})
+					case react.PartImage:
+						url := p.ImageURL
+						if url == "" && len(p.Data) > 0 {
+							url = fmt.Sprintf("data:%s;base64,%s", p.MIMEType, base64.StdEncoding.EncodeToString(p.Data))
+						}
+						parts = append(parts, map[string]any{
+							"type": "image_url",
+							"image_url": map[string]string{
+								"url": url,
+							},
+						})
+					}
+				}
+				toolContent = parts
+			}
 			messages = append(messages, map[string]any{
 				"role":         "tool",
 				"tool_call_id": m.ToolCallID,
-				"content":      m.Text(),
+				"content":      toolContent,
 			})
 		}
 	}
