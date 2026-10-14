@@ -10,47 +10,7 @@ import (
 	"github.com/gosolu/react/provider/mock"
 )
 
-type StructuredTestPerson struct {
-	Name string `json:"name"`
-	Age  int    `json:"age"`
-}
 
-func TestRunStructured(t *testing.T) {
-	ctx := context.Background()
-	var checkedFormat bool
-
-	p := mock.NewFunc(func(ctx context.Context, req *Request) (*Response, error) {
-		if req.ResponseFormat.Type == ResponseFormatJSONSchema && len(req.ResponseFormat.JSONSchema) > 0 {
-			checkedFormat = true
-		}
-		return &Response{
-			Message: Message{
-				Role:    RoleAssistant,
-				Content: []Part{TextPart(`{"name": "Alice", "age": 30}`)},
-			},
-			StopReason: StopEnd,
-		}, nil
-	})
-
-	a, err := New(WithProvider(p))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	person, res, err := RunStructured[StructuredTestPerson](ctx, a, "struct-sess", "Extract Alice info")
-	if err != nil {
-		t.Fatalf("RunStructured failed: %v", err)
-	}
-	if !checkedFormat {
-		t.Fatal("expected Request.ResponseFormat to be populated with JSONSchema")
-	}
-	if person.Name != "Alice" || person.Age != 30 {
-		t.Fatalf("parsed person mismatch: got %+v", person)
-	}
-	if res.Output != `{"name": "Alice", "age": 30}` {
-		t.Fatalf("unexpected result output: %s", res.Output)
-	}
-}
 
 func TestSessionRememberApprover(t *testing.T) {
 	ctx := context.Background()

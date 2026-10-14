@@ -321,23 +321,6 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 	if req.Temperature != nil {
 		body["temperature"] = *req.Temperature
 	}
-	if req.ResponseFormat != nil {
-		rf := map[string]any{"type": string(req.ResponseFormat.Type)}
-		if req.ResponseFormat.Type == react.ResponseFormatJSONSchema && len(req.ResponseFormat.JSONSchema) > 0 {
-			var schema map[string]any
-			_ = json.Unmarshal(req.ResponseFormat.JSONSchema, &schema)
-			name := req.ResponseFormat.Name
-			if name == "" {
-				name = "output_schema"
-			}
-			rf["json_schema"] = map[string]any{
-				"name":   name,
-				"schema": schema,
-				"strict": req.ResponseFormat.Strict,
-			}
-		}
-		body["response_format"] = rf
-	}
 
 	var messages []map[string]any
 	if req.System != "" {

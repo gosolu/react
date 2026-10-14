@@ -140,13 +140,12 @@ func WithPersistCompaction() Option { return func(c *config) { c.persistCompacti
 type RunOption func(*runConfig)
 
 type runConfig struct {
-	parts          []Part
-	history        []Message
-	model          string
-	toolChoice     string
-	tools          []Tool
-	responseFormat *ResponseFormat
-	onEvent        func(Event)
+	parts      []Part
+	history    []Message
+	model      string
+	toolChoice string
+	tools      []Tool
+	onEvent    func(Event)
 }
 
 // WithInputParts appends extra content (e.g. images) to the user message.
@@ -167,11 +166,6 @@ func WithToolChoice(choice string) RunOption { return func(r *runConfig) { r.too
 // WithRunTools injects additional tools for this specific run.
 func WithRunTools(ts ...Tool) RunOption {
 	return func(r *runConfig) { r.tools = append(r.tools, ts...) }
-}
-
-// WithResponseFormat sets the desired response format (e.g. JSON schema) for this run.
-func WithResponseFormat(rf ResponseFormat) RunOption {
-	return func(r *runConfig) { r.responseFormat = &rf }
 }
 
 // WithEventHandler observes events during Run (non-stream mode). Calls are

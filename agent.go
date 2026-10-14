@@ -21,7 +21,6 @@ var (
 	ErrMaxDepth         = errors.New("agent: max sub-agent depth exceeded")
 	ErrNoProvider       = errors.New("agent: provider is required")
 	ErrAgentClosed      = errors.New("agent: closed")
-	ErrTruncatedOutput  = errors.New("agent: model output reached max tokens limit")
 )
 
 // Agent is an immutable, concurrency-safe agent. Create with New.

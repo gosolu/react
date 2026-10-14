@@ -290,26 +290,6 @@ agent, _ := react.New(
 
 ---
 
-## Structured Output
-
-Constrain model outputs to a typed Go struct using standard schema generation:
-
-```go
-type Analysis struct {
-    Summary    string   `json:"summary" desc:"Brief summary of findings"`
-    RiskScore  int      `json:"risk_score" desc:"Risk score from 1 to 10"`
-    Actionable []string `json:"actionable" desc:"Recommended next steps"`
-}
-
-analysis, res, err := react.RunStructured[Analysis](ctx, agent, "session-id", "Analyze recent incident report")
-if err != nil {
-    log.Fatal(err)
-}
-fmt.Printf("Risk: %d/10 - %s\n", analysis.RiskScore, analysis.Summary)
-```
-
----
-
 ## Persistent Storage & Confinement
 
 ### File-Based Session Storage

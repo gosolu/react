@@ -163,13 +163,12 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 			msgs = append(msgs, UserText(b.String()))
 		}
 		req := &Request{
-			Model:          model,
-			System:         a.system,
-			Messages:       msgs,
-			Tools:          specs,
-			MaxTokens:      a.cfg.maxTokens,
-			Temperature:    a.cfg.temperature,
-			ResponseFormat: rcfg.responseFormat,
+			Model:       model,
+			System:      a.system,
+			Messages:    msgs,
+			Tools:       specs,
+			MaxTokens:   a.cfg.maxTokens,
+			Temperature: a.cfg.temperature,
 		}
 		// A forced tool choice applies to the first turn only, otherwise the
 		// model could never produce a final answer.
@@ -203,9 +202,6 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 		}
 		result.Usage.Add(resp.Usage)
 		result.StopReason = resp.StopReason
-		if resp.StopReason == StopLength {
-			emit(Event{Type: EventWarning, Text: "model generation reached maximum output tokens (StopLength)"})
-		}
 		history = append(history, msg)
 		pending = append(pending, msg)
 		result.Messages = append(result.Messages, msg)
