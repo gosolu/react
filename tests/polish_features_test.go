@@ -1,4 +1,4 @@
-package react_test
+package tests
 
 import (
 	"context"
@@ -6,24 +6,22 @@ import (
 	"sync/atomic"
 	"testing"
 
-	. "github.com/gosolu/react"
+	"github.com/gosolu/react"
 	"github.com/gosolu/react/provider/mock"
 )
-
-
 
 func TestSessionRememberApprover(t *testing.T) {
 	ctx := context.Background()
 	var callCount int32
 
-	base := PermissionApproverFunc(func(ctx context.Context, req ApprovalRequest) (bool, error) {
+	base := react.PermissionApproverFunc(func(ctx context.Context, req react.ApprovalRequest) (bool, error) {
 		atomic.AddInt32(&callCount, 1)
 		return true, nil
 	})
 
-	remember := NewSessionRememberApprover(base)
-	req := ApprovalRequest{
-		Call: ToolCall{Name: "rm_rf"},
+	remember := react.NewSessionRememberApprover(base)
+	req := react.ApprovalRequest{
+		Call: react.ToolCall{Name: "rm_rf"},
 	}
 
 	// 1. First call - goes to base approver
@@ -48,8 +46,8 @@ func TestSessionRememberApprover(t *testing.T) {
 	}
 
 	// 3. Different tool - should invoke base approver
-	reqOther := ApprovalRequest{
-		Call: ToolCall{Name: "format"},
+	reqOther := react.ApprovalRequest{
+		Call: react.ToolCall{Name: "format"},
 	}
 	ok, err = remember.Approve(ctx, reqOther)
 	if err != nil || !ok {
@@ -63,7 +61,7 @@ func TestSessionRememberApprover(t *testing.T) {
 func TestWithMaxToolOutput(t *testing.T) {
 	ctx := context.Background()
 
-	bigTool := NewTool("generate_big", "generates big output", func(ctx context.Context, in struct{}) (string, error) {
+	bigTool := react.NewTool("generate_big", "generates big output", func(ctx context.Context, in struct{}) (string, error) {
 		return strings.Repeat("A", 100), nil
 	})
 
@@ -72,10 +70,10 @@ func TestWithMaxToolOutput(t *testing.T) {
 		mock.Text("done"),
 	)
 
-	a, err := New(
-		WithProvider(p),
-		WithTools(bigTool),
-		WithMaxToolOutput(30),
+	a, err := react.New(
+		react.WithProvider(p),
+		react.WithTools(bigTool),
+		react.WithMaxToolOutput(30),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +87,7 @@ func TestWithMaxToolOutput(t *testing.T) {
 	// Check messages for truncation marker
 	var foundTruncated bool
 	for _, m := range res.Messages {
-		if m.Role == RoleTool {
+		if m.Role == react.RoleTool {
 			txt := m.Text()
 			if strings.Contains(txt, "...[output truncated from 100 bytes]") && strings.HasPrefix(txt, strings.Repeat("A", 30)) {
 				foundTruncated = true
@@ -105,7 +103,7 @@ func TestWithMaxToolOutput(t *testing.T) {
 func TestWithRunTools(t *testing.T) {
 	ctx := context.Background()
 
-	runOnlyTool := NewTool("run_only_tool", "available only in this run", func(ctx context.Context, in struct{}) (string, error) {
+	runOnlyTool := react.NewTool("run_only_tool", "available only in this run", func(ctx context.Context, in struct{}) (string, error) {
 		return "run_only_ok", nil
 	})
 
@@ -114,7 +112,7 @@ func TestWithRunTools(t *testing.T) {
 		mock.Text("completed"),
 	)
 
-	a, err := New(WithProvider(p))
+	a, err := react.New(react.WithProvider(p))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +132,7 @@ func TestWithRunTools(t *testing.T) {
 	}
 
 	// Execute with run-level tool option
-	res, err := a.Run(ctx, "run-tool-sess", "call run only tool", WithRunTools(runOnlyTool))
+	res, err := a.Run(ctx, "run-tool-sess", "call run only tool", react.WithRunTools(runOnlyTool))
 	if err != nil {
 		t.Fatalf("Run with WithRunTools failed: %v", err)
 	}

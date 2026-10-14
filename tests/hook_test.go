@@ -1,4 +1,4 @@
-package react_test
+package tests
 
 import (
 	"context"
@@ -8,19 +8,19 @@ import (
 	"sync/atomic"
 	"testing"
 
-	. "github.com/gosolu/react"
+	"github.com/gosolu/react"
 	"github.com/gosolu/react/provider/mock"
 )
 
 func TestBeforePromptHook(t *testing.T) {
 	t.Run("deny prompt", func(t *testing.T) {
 		p := mock.New(mock.Text("should not reach"))
-		a, err := New(WithProvider(p), WithHooks(Hooks{
-			BeforePrompt: func(ctx context.Context, rc *RunContext, prompt string) (HookPromptDecision, error) {
+		a, err := react.New(react.WithProvider(p), react.WithHooks(react.Hooks{
+			BeforePrompt: func(ctx context.Context, rc *react.RunContext, prompt string) (react.HookPromptDecision, error) {
 				if prompt == "unsafe input" {
-					return HookPromptDecision{Action: HookDeny, Reason: "disallowed prompt"}, nil
+					return react.HookPromptDecision{Action: react.HookDeny, Reason: "disallowed prompt"}, nil
 				}
-				return HookPromptDecision{Action: HookContinue}, nil
+				return react.HookPromptDecision{Action: react.HookContinue}, nil
 			},
 		}))
 		if err != nil {
@@ -35,19 +35,19 @@ func TestBeforePromptHook(t *testing.T) {
 
 	t.Run("rewrite prompt and inject context", func(t *testing.T) {
 		var capturedPrompt string
-		p := mock.NewFunc(func(ctx context.Context, req *Request) (*Response, error) {
+		p := mock.NewFunc(func(ctx context.Context, req *react.Request) (*react.Response, error) {
 			capturedPrompt = req.Messages[0].Text()
 			// Second message should be system reminder
 			if len(req.Messages) < 2 || req.Messages[1].Text() != "<system-reminder>\nuser is admin\n</system-reminder>" {
 				t.Fatalf("unexpected messages: %v", req.Messages)
 			}
-			return &Response{Message: AssistantText("done")}, nil
+			return &react.Response{Message: react.AssistantText("done")}, nil
 		})
 
-		a, err := New(WithProvider(p), WithHooks(Hooks{
-			BeforePrompt: func(ctx context.Context, rc *RunContext, prompt string) (HookPromptDecision, error) {
-				return HookPromptDecision{
-					Action:            HookContinue,
+		a, err := react.New(react.WithProvider(p), react.WithHooks(react.Hooks{
+			BeforePrompt: func(ctx context.Context, rc *react.RunContext, prompt string) (react.HookPromptDecision, error) {
+				return react.HookPromptDecision{
+					Action:            react.HookContinue,
 					UpdatedPrompt:     "transformed: " + prompt,
 					AdditionalContext: "user is admin",
 				}, nil
@@ -77,17 +77,17 @@ func TestBeforeStopHook(t *testing.T) {
 		mock.Text("final verified answer"),
 	)
 
-	a, err := New(WithProvider(p), WithHooks(Hooks{
-		BeforeStop: func(ctx context.Context, rc *RunContext, output string) (HookDecision, error) {
+	a, err := react.New(react.WithProvider(p), react.WithHooks(react.Hooks{
+		BeforeStop: func(ctx context.Context, rc *react.RunContext, output string) (react.HookDecision, error) {
 			stopCalls++
 			if stopCalls == 1 {
 				// Prevent stopping on turn 1
-				return HookDecision{
-					Action: HookContinueWorking,
+				return react.HookDecision{
+					Action: react.HookContinueWorking,
 					Reason: "Please run tests before finishing.",
 				}, nil
 			}
-			return HookDecision{Action: HookContinue}, nil
+			return react.HookDecision{Action: react.HookContinue}, nil
 		},
 	}))
 	if err != nil {
@@ -111,7 +111,7 @@ func TestBeforeStopHook(t *testing.T) {
 
 func TestToolHooksAndMatchers(t *testing.T) {
 	toolExecuted := false
-	testTool := NewTool("test_tool", "test", func(ctx context.Context, in map[string]string) (string, error) {
+	testTool := react.NewTool("test_tool", "test", func(ctx context.Context, in map[string]string) (string, error) {
 		toolExecuted = true
 		return "tool output: " + in["cmd"], nil
 	})
@@ -127,25 +127,25 @@ func TestToolHooksAndMatchers(t *testing.T) {
 		mock.Text("finished"),
 	)
 
-	a, err := New(
-		WithProvider(p),
-		WithTools(testTool),
-		WithHooks(Hooks{
-			BeforeTool: MatchTool("test_*", func(ctx context.Context, rc *RunContext, call *ToolCall) (HookDecision, error) {
+	a, err := react.New(
+		react.WithProvider(p),
+		react.WithTools(testTool),
+		react.WithHooks(react.Hooks{
+			BeforeTool: react.MatchTool("test_*", func(ctx context.Context, rc *react.RunContext, call *react.ToolCall) (react.HookDecision, error) {
 				matchedCalls++
-				return HookDecision{
-					Action:            HookContinue,
+				return react.HookDecision{
+					Action:            react.HookContinue,
 					UpdatedArguments:  json.RawMessage(`{"cmd":"updated_by_hook"}`),
 					AdditionalContext: "tool executed safely",
 				}, nil
 			}),
-			AfterTool: MatchToolAfter("test_tool", func(ctx context.Context, rc *RunContext, call ToolCall, res *ToolResult) error {
+			AfterTool: react.MatchToolAfter("test_tool", func(ctx context.Context, rc *react.RunContext, call react.ToolCall, res *react.ToolResult) error {
 				var parsed map[string]string
 				_ = json.Unmarshal(call.Arguments, &parsed)
 				updatedArgsSeen = parsed["cmd"]
 				return nil
 			}),
-			AfterToolBatch: func(ctx context.Context, rc *RunContext, results []ToolCallResult) error {
+			AfterToolBatch: func(ctx context.Context, rc *react.RunContext, results []react.ToolCallResult) error {
 				afterBatchCalls++
 				if len(results) != 1 || results[0].Call.Name != "test_tool" {
 					t.Fatalf("unexpected batch results: %v", results)
@@ -181,7 +181,7 @@ func TestToolHooksAndMatchers(t *testing.T) {
 
 func TestToolFailureHook(t *testing.T) {
 	var failureReported error
-	failingTool := NewTool("fail_tool", "failing tool", func(ctx context.Context, in any) (string, error) {
+	failingTool := react.NewTool("fail_tool", "failing tool", func(ctx context.Context, in any) (string, error) {
 		return "", errors.New("boom")
 	})
 
@@ -190,11 +190,11 @@ func TestToolFailureHook(t *testing.T) {
 		mock.Text("handled error"),
 	)
 
-	a, err := New(
-		WithProvider(p),
-		WithTools(failingTool),
-		WithHooks(Hooks{
-			OnToolFailure: func(ctx context.Context, rc *RunContext, call ToolCall, err error) error {
+	a, err := react.New(
+		react.WithProvider(p),
+		react.WithTools(failingTool),
+		react.WithHooks(react.Hooks{
+			OnToolFailure: func(ctx context.Context, rc *react.RunContext, call react.ToolCall, err error) error {
 				failureReported = err
 				return nil
 			},
@@ -216,7 +216,7 @@ func TestToolFailureHook(t *testing.T) {
 func TestPermissionHooks(t *testing.T) {
 	t.Run("auto approve by hook", func(t *testing.T) {
 		var permissionRequestSeen bool
-		cmdTool := NewTool("cmd", "cmd", func(ctx context.Context, in map[string]string) (string, error) {
+		cmdTool := react.NewTool("cmd", "cmd", func(ctx context.Context, in map[string]string) (string, error) {
 			return "executed: " + in["c"], nil
 		})
 
@@ -225,16 +225,16 @@ func TestPermissionHooks(t *testing.T) {
 			mock.Text("ok"),
 		)
 
-		a, err := New(
-			WithProvider(p),
-			WithTools(cmdTool),
-			WithPolicy(PermissionPolicyFunc(func(ctx context.Context, spec ToolSpec, call ToolCall) PolicyDecision {
-				return PolicyAsk
+		a, err := react.New(
+			react.WithProvider(p),
+			react.WithTools(cmdTool),
+			react.WithPolicy(react.PermissionPolicyFunc(func(ctx context.Context, spec react.ToolSpec, call react.ToolCall) react.PolicyDecision {
+				return react.PolicyAsk
 			})),
-			WithHooks(Hooks{
-				OnPermissionRequest: func(ctx context.Context, rc *RunContext, req ApprovalRequest) (HookApprovalDecision, error) {
+			react.WithHooks(react.Hooks{
+				OnPermissionRequest: func(ctx context.Context, rc *react.RunContext, req react.ApprovalRequest) (react.HookApprovalDecision, error) {
 					permissionRequestSeen = true
-					return HookApprovalDecision{
+					return react.HookApprovalDecision{
 						Handled:  true,
 						Approved: true,
 					}, nil
@@ -259,7 +259,7 @@ func TestPermissionHooks(t *testing.T) {
 
 	t.Run("permission denied hook", func(t *testing.T) {
 		var deniedReason string
-		cmdTool := NewTool("cmd", "cmd", func(ctx context.Context, in map[string]string) (string, error) {
+		cmdTool := react.NewTool("cmd", "cmd", func(ctx context.Context, in map[string]string) (string, error) {
 			return "executed", nil
 		})
 
@@ -268,14 +268,14 @@ func TestPermissionHooks(t *testing.T) {
 			mock.Text("denied handled"),
 		)
 
-		a, err := New(
-			WithProvider(p),
-			WithTools(cmdTool),
-			WithPolicy(PermissionPolicyFunc(func(ctx context.Context, spec ToolSpec, call ToolCall) PolicyDecision {
-				return PolicyDeny
+		a, err := react.New(
+			react.WithProvider(p),
+			react.WithTools(cmdTool),
+			react.WithPolicy(react.PermissionPolicyFunc(func(ctx context.Context, spec react.ToolSpec, call react.ToolCall) react.PolicyDecision {
+				return react.PolicyDeny
 			})),
-			WithHooks(Hooks{
-				OnPermissionDenied: func(ctx context.Context, rc *RunContext, call ToolCall, reason string) {
+			react.WithHooks(react.Hooks{
+				OnPermissionDenied: func(ctx context.Context, rc *react.RunContext, call react.ToolCall, reason string) {
 					deniedReason = reason
 				},
 			}),
@@ -299,7 +299,7 @@ func TestPermissionHooks(t *testing.T) {
 
 func TestSubagentHooks(t *testing.T) {
 	subP := mock.New(mock.Text("subagent finished"))
-	subAgent, err := New(WithProvider(subP), WithName("worker"))
+	subAgent, err := react.New(react.WithProvider(subP), react.WithName("worker"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,16 +316,16 @@ func TestSubagentHooks(t *testing.T) {
 		mock.Text("parent finished"),
 	)
 
-	parentAgent, err := New(
-		WithProvider(parentP),
-		WithName("supervisor"),
-		WithTools(subAgent.AsTool("delegate_worker", "delegate to worker")),
-		WithHooks(Hooks{
-			SubagentStart: func(ctx context.Context, rc *RunContext, agentName, task string) {
+	parentAgent, err := react.New(
+		react.WithProvider(parentP),
+		react.WithName("supervisor"),
+		react.WithTools(subAgent.AsTool("delegate_worker", "delegate to worker")),
+		react.WithHooks(react.Hooks{
+			SubagentStart: func(ctx context.Context, rc *react.RunContext, agentName, task string) {
 				startedAgent = agentName
 				startedTask = task
 			},
-			SubagentStop: func(ctx context.Context, rc *RunContext, agentName, task, output string, err error) {
+			SubagentStop: func(ctx context.Context, rc *react.RunContext, agentName, task, output string, err error) {
 				stoppedAgent = agentName
 				stoppedOut = output
 			},
@@ -358,13 +358,13 @@ func TestCompactionHooks(t *testing.T) {
 
 	p := mock.New(mock.Text("done"))
 
-	a, err := New(
-		WithProvider(p),
-		WithHooks(Hooks{
-			PreCompact: func(ctx context.Context, rc *RunContext, messageCount int) {
+	a, err := react.New(
+		react.WithProvider(p),
+		react.WithHooks(react.Hooks{
+			PreCompact: func(ctx context.Context, rc *react.RunContext, messageCount int) {
 				preCalled.Store(true)
 			},
-			PostCompact: func(ctx context.Context, rc *RunContext, beforeCount, afterCount int) {
+			PostCompact: func(ctx context.Context, rc *react.RunContext, beforeCount, afterCount int) {
 				postCalled.Store(true)
 			},
 		}),
@@ -386,10 +386,10 @@ func TestStopFailureHook(t *testing.T) {
 	var failureSeen error
 	p := mock.New(mock.Error(errors.New("upstream provider failure")))
 
-	a, err := New(
-		WithProvider(p),
-		WithHooks(Hooks{
-			OnStopFailure: func(ctx context.Context, rc *RunContext, err error) {
+	a, err := react.New(
+		react.WithProvider(p),
+		react.WithHooks(react.Hooks{
+			OnStopFailure: func(ctx context.Context, rc *react.RunContext, err error) {
 				failureSeen = err
 			},
 		}),
@@ -408,7 +408,7 @@ func TestStopFailureHook(t *testing.T) {
 }
 
 func TestRunContextConcurrency(t *testing.T) {
-	rc := &RunContext{}
+	rc := &react.RunContext{}
 	var wg sync.WaitGroup
 	for i := range 50 {
 		wg.Add(2)

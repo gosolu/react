@@ -1,4 +1,4 @@
-package react_test
+package tests
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/gosolu/react"
+	"github.com/gosolu/react"
 	"github.com/gosolu/react/provider/mock"
 )
 
@@ -16,13 +16,13 @@ type calcArgs struct {
 	B int `json:"b"`
 }
 
-func setupTestTools() (Tool, Tool) {
-	add := NewTool("add", "adds two numbers", func(ctx context.Context, in calcArgs) (int, error) {
+func setupTestTools() (react.Tool, react.Tool) {
+	add := react.NewTool("add", "adds two numbers", func(ctx context.Context, in calcArgs) (int, error) {
 		return in.A + in.B, nil
 	})
-	dangerous := NewTool("destroy", "destructive tool", func(ctx context.Context, in struct{}) (string, error) {
+	dangerous := react.NewTool("destroy", "destructive tool", func(ctx context.Context, in struct{}) (string, error) {
 		return "destroyed", nil
-	}, Destructive())
+	}, react.Destructive())
 	return add, dangerous
 }
 
@@ -40,9 +40,9 @@ func TestAgentStreamAndRunParity(t *testing.T) {
 
 	// 1. Test Run (non-stream)
 	p1 := makeProvider()
-	a1, err := New(
-		WithProvider(p1),
-		WithTools(add),
+	a1, err := react.New(
+		react.WithProvider(p1),
+		react.WithTools(add),
 	)
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
@@ -61,24 +61,24 @@ func TestAgentStreamAndRunParity(t *testing.T) {
 
 	// 2. Test Stream
 	p2 := makeProvider()
-	a2, err := New(
-		WithProvider(p2),
-		WithTools(add),
+	a2, err := react.New(
+		react.WithProvider(p2),
+		react.WithTools(add),
 	)
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
 
-	var streamResult *Result
+	var streamResult *react.Result
 	var textDeltas []string
 	for ev, err := range a2.Stream(ctx, "session-2", "calculate 2+3") {
 		if err != nil {
 			t.Fatalf("Stream error: %v", err)
 		}
-		if ev.Type == EventTextDelta {
+		if ev.Type == react.EventTextDelta {
 			textDeltas = append(textDeltas, ev.Text)
 		}
-		if ev.Type == EventRunEnd {
+		if ev.Type == react.EventRunEnd {
 			streamResult = ev.Result
 		}
 	}
@@ -100,31 +100,31 @@ func TestAgentStreamAndRunParity(t *testing.T) {
 
 func TestAgentMaxTurns(t *testing.T) {
 	// Infinitely loop tool calls
-	p := mock.NewFunc(func(ctx context.Context, req *Request) (*Response, error) {
-		return &Response{
-			Message: Message{
-				Role:      RoleAssistant,
-				ToolCalls: []ToolCall{mock.Call("loop", `{}`)},
+	p := mock.NewFunc(func(ctx context.Context, req *react.Request) (*react.Response, error) {
+		return &react.Response{
+			Message: react.Message{
+				Role:      react.RoleAssistant,
+				ToolCalls: []react.ToolCall{mock.Call("loop", `{}`)},
 			},
-			StopReason: StopToolCall,
+			StopReason: react.StopToolCall,
 		}, nil
 	})
 
-	loopTool := NewTool("loop", "loop", func(ctx context.Context, in struct{}) (string, error) {
+	loopTool := react.NewTool("loop", "loop", func(ctx context.Context, in struct{}) (string, error) {
 		return "ok", nil
 	})
 
-	a, err := New(
-		WithProvider(p),
-		WithTools(loopTool),
-		WithMaxTurns(3),
+	a, err := react.New(
+		react.WithProvider(p),
+		react.WithTools(loopTool),
+		react.WithMaxTurns(3),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	res, err := a.Run(context.Background(), "s1", "start")
-	if err != ErrMaxTurns {
+	if err != react.ErrMaxTurns {
 		t.Fatalf("expected ErrMaxTurns, got %v", err)
 	}
 	if res.Turns != 3 {
@@ -140,14 +140,14 @@ func TestAgentPermissions(t *testing.T) {
 	)
 
 	var approved atomic.Bool
-	approver := PermissionApproverFunc(func(ctx context.Context, req ApprovalRequest) (bool, error) {
+	approver := react.PermissionApproverFunc(func(ctx context.Context, req react.ApprovalRequest) (bool, error) {
 		return approved.Load(), nil
 	})
 
-	a, err := New(
-		WithProvider(p),
-		WithTools(dangerous),
-		WithPermission(DefaultPermissionPolicy(), approver),
+	a, err := react.New(
+		react.WithProvider(p),
+		react.WithTools(dangerous),
+		react.WithPermission(react.DefaultPermissionPolicy(), approver),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -171,10 +171,10 @@ func TestAgentPermissions(t *testing.T) {
 		mock.Text("Done."),
 	)
 	approved.Store(true)
-	a2, _ := New(
-		WithProvider(p2),
-		WithTools(dangerous),
-		WithPermission(DefaultPermissionPolicy(), approver),
+	a2, _ := react.New(
+		react.WithProvider(p2),
+		react.WithTools(dangerous),
+		react.WithPermission(react.DefaultPermissionPolicy(), approver),
 	)
 	res2, err := a2.Run(context.Background(), "s2", "destroy it")
 	if err != nil {
@@ -190,9 +190,9 @@ func TestAgentSubAgent(t *testing.T) {
 	childProvider := mock.New(
 		mock.Text("child answer"),
 	)
-	child, err := New(
-		WithName("child-agent"),
-		WithProvider(childProvider),
+	child, err := react.New(
+		react.WithName("child-agent"),
+		react.WithProvider(childProvider),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -205,13 +205,13 @@ func TestAgentSubAgent(t *testing.T) {
 		mock.Text("final parent answer"),
 	)
 
-	var childEventsReceived []Event
-	parent, err := New(
-		WithName("parent-agent"),
-		WithProvider(parentProvider),
-		WithTools(childTool),
-		WithHooks(Hooks{
-			OnEvent: func(ctx context.Context, ev Event) {
+	var childEventsReceived []react.Event
+	parent, err := react.New(
+		react.WithName("parent-agent"),
+		react.WithProvider(parentProvider),
+		react.WithTools(childTool),
+		react.WithHooks(react.Hooks{
+			OnEvent: func(ctx context.Context, ev react.Event) {
 				if ev.Agent == "child-agent" {
 					childEventsReceived = append(childEventsReceived, ev)
 				}
@@ -243,7 +243,7 @@ func TestStreamBreakCancellation(t *testing.T) {
 	)
 	p.ChunkSize = 1 // 1 char per chunk
 
-	a, err := New(WithProvider(p))
+	a, err := react.New(react.WithProvider(p))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestStreamBreakCancellation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ev.Type == EventTextDelta {
+		if ev.Type == react.EventTextDelta {
 			count++
 			if count == 3 {
 				break // early break
@@ -273,9 +273,9 @@ func TestAgentSessionConcurrency(t *testing.T) {
 		mock.Text("response 5"),
 	)
 
-	a, err := New(
-		WithProvider(p),
-		WithStore(NewInMemory()),
+	a, err := react.New(
+		react.WithProvider(p),
+		react.WithStore(react.NewInMemory()),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -306,10 +306,10 @@ func TestAgentSessionConcurrency(t *testing.T) {
 		t.Fatalf("expected %d messages, got %d", 2*n, len(history))
 	}
 	for i := 0; i < len(history); i += 2 {
-		if history[i].Role != RoleUser {
+		if history[i].Role != react.RoleUser {
 			t.Errorf("msg %d expected RoleUser, got %s", i, history[i].Role)
 		}
-		if history[i+1].Role != RoleAssistant {
+		if history[i+1].Role != react.RoleAssistant {
 			t.Errorf("msg %d expected RoleAssistant, got %s", i+1, history[i+1].Role)
 		}
 	}
@@ -319,32 +319,32 @@ func TestAgentReasoningPersistence(t *testing.T) {
 	add, _ := setupTestTools()
 	p := mock.New(
 		mock.Step{
-			Response: &Response{
-				Message: Message{
-					Role: RoleAssistant,
-					ToolCalls: []ToolCall{
+			Response: &react.Response{
+				Message: react.Message{
+					Role: react.RoleAssistant,
+					ToolCalls: []react.ToolCall{
 						mock.Call("add", `{"a": 1, "b": 2}`),
 					},
 				},
 				Reasoning:  "Step 1: compute 1+2",
-				StopReason: StopToolCall,
+				StopReason: react.StopToolCall,
 			},
 		},
 		mock.Step{
-			Response: &Response{
-				Message: Message{
-					Role:    RoleAssistant,
-					Content: []Part{TextPart("3")},
+			Response: &react.Response{
+				Message: react.Message{
+					Role:    react.RoleAssistant,
+					Content: []react.Part{react.TextPart("3")},
 				},
 				Reasoning:  "Step 2: final answer is 3",
-				StopReason: StopEnd,
+				StopReason: react.StopEnd,
 			},
 		},
 	)
 
-	a, err := New(
-		WithProvider(p),
-		WithTools(add),
+	a, err := react.New(
+		react.WithProvider(p),
+		react.WithTools(add),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -366,7 +366,7 @@ func TestAgentReasoningPersistence(t *testing.T) {
 	// Turn 1 assistant message should have Reasoning preserved:
 	var foundAssistantReasoning bool
 	for _, m := range history {
-		if m.Role == RoleAssistant && m.Reasoning == "Step 1: compute 1+2" {
+		if m.Role == react.RoleAssistant && m.Reasoning == "Step 1: compute 1+2" {
 			foundAssistantReasoning = true
 			break
 		}
@@ -377,13 +377,13 @@ func TestAgentReasoningPersistence(t *testing.T) {
 }
 
 func TestUsageCacheTokens(t *testing.T) {
-	u1 := Usage{
+	u1 := react.Usage{
 		InputTokens:      100,
 		OutputTokens:     50,
 		CacheReadTokens:  40,
 		CacheWriteTokens: 10,
 	}
-	u2 := Usage{
+	u2 := react.Usage{
 		InputTokens:      200,
 		OutputTokens:     80,
 		CacheReadTokens:  60,

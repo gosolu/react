@@ -1,16 +1,14 @@
-package provider_test
+package provider
 
 import (
 	"strings"
 	"testing"
-
-	"github.com/gosolu/react/provider"
 )
 
 func TestReadSSE(t *testing.T) {
 	in := ": comment\nevent: a\ndata: one\ndata: two\n\ndata: {\"x\":1}\n\ndata: [DONE]\n"
-	var got []provider.SSEEvent
-	for ev, err := range provider.ReadSSE(strings.NewReader(in)) {
+	var got []SSEEvent
+	for ev, err := range ReadSSE(strings.NewReader(in)) {
 		if err != nil {
 			t.Fatal(err)
 		}
