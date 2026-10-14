@@ -7,6 +7,7 @@ package react
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,10 +23,74 @@ const FileName = "SKILL.md"
 
 // Frontmatter is the YAML header of a SKILL.md file.
 type Frontmatter struct {
-	Name         string         `json:"name" yaml:"name"`
-	Description  string         `json:"description" yaml:"description"`
-	AllowedTools []string       `json:"allowed-tools" yaml:"allowed-tools"`
-	Metadata     map[string]any `json:"metadata" yaml:"metadata"`
+	Name          string         `json:"name" yaml:"name"`
+	Description   string         `json:"description" yaml:"description"`
+	License       string         `json:"license,omitempty" yaml:"license,omitempty"`
+	Compatibility string         `json:"compatibility,omitempty" yaml:"compatibility,omitempty"`
+	AllowedTools  []string       `json:"allowed-tools,omitempty" yaml:"allowed-tools,omitempty"`
+	Metadata      map[string]any `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+}
+
+// AllowedToolsString returns allowed tools as a space-separated string per the specification.
+func (fm Frontmatter) AllowedToolsString() string {
+	return strings.Join(fm.AllowedTools, " ")
+}
+
+// UnmarshalJSON unmarshals Frontmatter supporting allowed-tools as either a string or string array.
+func (fm *Frontmatter) UnmarshalJSON(data []byte) error {
+	type rawFrontmatter Frontmatter
+	var raw struct {
+		rawFrontmatter
+		RawAllowedTools any `json:"allowed-tools"`
+		AltAllowedTools any `json:"allowed_tools"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*fm = Frontmatter(raw.rawFrontmatter)
+	if raw.RawAllowedTools != nil {
+		fm.AllowedTools = parseAllowedTools(raw.RawAllowedTools)
+	} else if raw.AltAllowedTools != nil {
+		fm.AllowedTools = parseAllowedTools(raw.AltAllowedTools)
+	}
+	return nil
+}
+
+// Validate checks if the frontmatter satisfies the Agent Skills specification.
+func (fm Frontmatter) Validate() error {
+	if err := ValidateSkillName(fm.Name); err != nil {
+		return err
+	}
+	if len(fm.Description) == 0 {
+		return errors.New("description is required")
+	}
+	if len(fm.Description) > 1024 {
+		return fmt.Errorf("description exceeds 1024 characters (%d)", len(fm.Description))
+	}
+	if len(fm.Compatibility) > 500 {
+		return fmt.Errorf("compatibility exceeds 500 characters (%d)", len(fm.Compatibility))
+	}
+	return nil
+}
+
+// ValidateSkillName checks if name satisfies the Agent Skills specification constraints:
+// 1-64 characters, lowercase alphanumeric and hyphens, no leading/trailing hyphens, no consecutive hyphens.
+func ValidateSkillName(name string) error {
+	if len(name) < 1 || len(name) > 64 {
+		return fmt.Errorf("skill name must be 1-64 characters, got %d", len(name))
+	}
+	if strings.HasPrefix(name, "-") || strings.HasSuffix(name, "-") {
+		return errors.New("skill name must not start or end with a hyphen")
+	}
+	if strings.Contains(name, "--") {
+		return errors.New("skill name must not contain consecutive hyphens")
+	}
+	for _, r := range name {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return fmt.Errorf("skill name must only contain lowercase alphanumeric characters and hyphens, invalid character: %c", r)
+		}
+	}
+	return nil
 }
 
 // Skill is a discovered skill. Its body is read lazily.
@@ -127,6 +192,50 @@ func (s *Skill) ReadFile(rel string) ([]byte, error) {
 
 // Location returns a human-readable location for diagnostics.
 func (s *Skill) Location() string { return s.dir }
+
+// Validate checks if the skill satisfies the Agent Skills specification.
+func (s *Skill) Validate() error {
+	if err := s.Frontmatter.Validate(); err != nil {
+		return err
+	}
+	if s.dir != "" && s.dir != "." {
+		expected := path.Base(s.dir)
+		if s.Frontmatter.Name != expected {
+			return fmt.Errorf("skill name %q does not match parent directory name %q", s.Frontmatter.Name, expected)
+		}
+	}
+	return nil
+}
+
+// Scripts lists bundled executable scripts (files under scripts/).
+func (s *Skill) Scripts() ([]string, error) {
+	return s.filesUnder("scripts")
+}
+
+// References lists bundled reference documentation (files under references/).
+func (s *Skill) References() ([]string, error) {
+	return s.filesUnder("references")
+}
+
+// Assets lists bundled assets or templates (files under assets/).
+func (s *Skill) Assets() ([]string, error) {
+	return s.filesUnder("assets")
+}
+
+func (s *Skill) filesUnder(prefix string) ([]string, error) {
+	files, err := s.Files()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	prefixWithSlash := prefix + "/"
+	for _, f := range files {
+		if strings.HasPrefix(f, prefixWithSlash) {
+			out = append(out, f)
+		}
+	}
+	return out, nil
+}
 
 // --- Zero-dependency YAML Frontmatter Parser ---
 
@@ -442,17 +551,24 @@ func mapToFrontmatter(m map[string]any) Frontmatter {
 	if v, ok := m["description"].(string); ok {
 		fm.Description = strings.TrimSpace(v)
 	}
+	if v, ok := m["license"].(string); ok {
+		fm.License = strings.TrimSpace(v)
+	}
+	if v, ok := m["compatibility"].(string); ok {
+		fm.Compatibility = strings.TrimSpace(v)
+	}
 	if v, ok := m["allowed-tools"]; ok {
-		fm.AllowedTools = toStringSlice(v)
+		fm.AllowedTools = parseAllowedTools(v)
 	} else if v, ok := m["allowed_tools"]; ok {
-		fm.AllowedTools = toStringSlice(v)
+		fm.AllowedTools = parseAllowedTools(v)
 	}
 	if v, ok := m["metadata"].(map[string]any); ok {
 		fm.Metadata = v
 	}
 
 	for k, v := range m {
-		if k == "name" || k == "description" || k == "allowed-tools" || k == "allowed_tools" || k == "metadata" {
+		if k == "name" || k == "description" || k == "license" || k == "compatibility" ||
+			k == "allowed-tools" || k == "allowed_tools" || k == "metadata" {
 			continue
 		}
 		if fm.Metadata == nil {
@@ -463,26 +579,136 @@ func mapToFrontmatter(m map[string]any) Frontmatter {
 	return fm
 }
 
-func toStringSlice(val any) []string {
+// parseAllowedTools converts an allowed-tools value into a string slice.
+// Per Agent Skills spec, allowed-tools is a space-separated string, but YAML/JSON sequences
+// are also supported for compatibility.
+func parseAllowedTools(val any) []string {
 	switch v := val.(type) {
 	case []string:
-		return v
+		var out []string
+		for _, item := range v {
+			out = append(out, splitAllowedToolsString(item)...)
+		}
+		return out
 	case []any:
-		out := make([]string, 0, len(v))
+		var out []string
 		for _, item := range v {
 			if s, ok := item.(string); ok {
-				out = append(out, s)
+				out = append(out, splitAllowedToolsString(s)...)
 			} else if item != nil {
-				out = append(out, fmt.Sprint(item))
+				out = append(out, splitAllowedToolsString(fmt.Sprint(item))...)
 			}
 		}
 		return out
 	case string:
-		if v == "" {
-			return nil
-		}
-		return []string{v}
+		return splitAllowedToolsString(v)
 	default:
 		return nil
 	}
+}
+
+// splitAllowedToolsString splits a space-separated string of tool patterns (e.g. "Bash(git:*) Bash(jq:*) Read")
+// while respecting parentheses and quotes.
+func splitAllowedToolsString(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var tokens []string
+	var cur strings.Builder
+	parenDepth := 0
+	inSingle := false
+	inDouble := false
+
+	flush := func() {
+		tok := strings.TrimSpace(cur.String())
+		tok = strings.Trim(tok, ",")
+		tok = unquoteYAML(tok)
+		if tok != "" {
+			tokens = append(tokens, tok)
+		}
+		cur.Reset()
+	}
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		switch ch {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+			cur.WriteByte(ch)
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+			cur.WriteByte(ch)
+		case '(':
+			if !inSingle && !inDouble {
+				parenDepth++
+			}
+			cur.WriteByte(ch)
+		case ')':
+			if !inSingle && !inDouble && parenDepth > 0 {
+				parenDepth--
+			}
+			cur.WriteByte(ch)
+		case ' ', '\t', '\r', '\n':
+			if !inSingle && !inDouble && parenDepth == 0 {
+				flush()
+				continue
+			}
+			cur.WriteByte(ch)
+		case ',':
+			if !inSingle && !inDouble && parenDepth == 0 {
+				flush()
+				continue
+			}
+			cur.WriteByte(ch)
+		default:
+			cur.WriteByte(ch)
+		}
+	}
+	flush()
+	return tokens
+}
+
+// SkillAllowedToolsKey is the RunContext key used to store tools pre-approved by active skills.
+const SkillAllowedToolsKey = "skill.active_allowed_tools"
+
+// AddSkillAllowedTools registers pre-approved tool patterns in rc for the active run.
+func AddSkillAllowedTools(rc *RunContext, tools ...string) {
+	if rc == nil || len(tools) == 0 {
+		return
+	}
+	var existing []string
+	if v, ok := rc.Get(SkillAllowedToolsKey); ok {
+		if list, ok := v.([]string); ok {
+			existing = append([]string(nil), list...)
+		}
+	}
+	seen := make(map[string]bool, len(existing)+len(tools))
+	for _, t := range existing {
+		seen[t] = true
+	}
+	for _, t := range tools {
+		t = strings.TrimSpace(t)
+		if t != "" && !seen[t] {
+			seen[t] = true
+			existing = append(existing, t)
+		}
+	}
+	rc.Set(SkillAllowedToolsKey, existing)
+}
+
+// ActiveSkillAllowedTools returns the tool patterns pre-approved by currently active skills.
+func ActiveSkillAllowedTools(ctx context.Context) []string {
+	if rc := RunContextFrom(ctx); rc != nil {
+		if v, ok := rc.Get(SkillAllowedToolsKey); ok {
+			if list, ok := v.([]string); ok {
+				return list
+			}
+		}
+	}
+	return nil
 }

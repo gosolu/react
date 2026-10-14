@@ -354,7 +354,12 @@ func (a *Agent) handleCall(ctx context.Context, rc *RunContext, reg *ToolRegistr
 	}
 	spec := t.Spec()
 
-	switch a.cfg.policy.Check(ctx, spec, call) {
+	dec := a.cfg.policy.Check(ctx, spec, call)
+	if dec == PolicyAsk && matchRules(ActiveSkillAllowedTools(ctx), spec, call) {
+		dec = PolicyAllow
+	}
+
+	switch dec {
 	case PolicyDeny:
 		a.hooks.PermissionDenied(ctx, rc, call, "denied by policy")
 		return ErrorResult("Error: this tool call was denied by policy."), nil

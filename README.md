@@ -191,7 +191,9 @@ Organize domain instructions into folders with a `SKILL.md` file:
 ---
 name: code-reviewer
 description: Review code changes for security, performance, and style issues.
-allowed-tools: [read_file, list_dir]
+allowed-tools: read_file list_dir
+license: Apache-2.0
+compatibility: Designed for reactive agents
 ---
 # Code Reviewer Instructions
 

@@ -71,6 +71,19 @@ func SkillDir(dir string) SkillSource {
 	})
 }
 
+// StandardSkillDirs returns standard Agent Skills discovery directories:
+// <projectDir>/.agents/skills and ~/.agents/skills (if user home dir is resolvable).
+func StandardSkillDirs(projectDir string) []string {
+	var dirs []string
+	if projectDir != "" {
+		dirs = append(dirs, path.Join(projectDir, ".agents", "skills"))
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		dirs = append(dirs, path.Join(home, ".agents", "skills"))
+	}
+	return dirs
+}
+
 // SkillRegistry holds loaded skills. It is safe for concurrent use.
 type SkillRegistry struct {
 	mu     sync.RWMutex
@@ -156,4 +169,17 @@ func (r *SkillRegistry) Catalog() string {
 		fmt.Fprintf(&b, "- %s: %s\n", s.Name, strings.TrimSpace(s.Description))
 	}
 	return b.String()
+}
+
+// Validate validates all registered skills against the Agent Skills specification.
+func (r *SkillRegistry) Validate() error {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var errs []error
+	for _, s := range r.skills {
+		if err := s.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("skill %s: %w", s.Name, err))
+		}
+	}
+	return errors.Join(errs...)
 }

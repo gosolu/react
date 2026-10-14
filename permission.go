@@ -2,6 +2,7 @@ package react
 
 import (
 	"context"
+	"encoding/json"
 	"path"
 	"strings"
 	"sync"
@@ -45,9 +46,13 @@ func AllowAllPermissionPolicy() PermissionPolicy {
 	return PermissionPolicyFunc(func(context.Context, ToolSpec, ToolCall) PolicyDecision { return PolicyAllow })
 }
 
-// DefaultPermissionPolicy allows read-only and unannotated tools and asks for Destructive ones.
+// DefaultPermissionPolicy allows read-only and unannotated tools, pre-approves tools allowed by active skills,
+// and asks for Destructive ones.
 func DefaultPermissionPolicy() PermissionPolicy {
-	return PermissionPolicyFunc(func(_ context.Context, s ToolSpec, _ ToolCall) PolicyDecision {
+	return PermissionPolicyFunc(func(ctx context.Context, s ToolSpec, c ToolCall) PolicyDecision {
+		if matchRules(ActiveSkillAllowedTools(ctx), s, c) {
+			return PolicyAllow
+		}
 		if s.Annotations.Destructive && !s.Annotations.ReadOnly {
 			return PolicyAsk
 		}
@@ -56,7 +61,8 @@ func DefaultPermissionPolicy() PermissionPolicy {
 }
 
 // PermissionRules matches tool names against glob patterns (path.Match syntax).
-// Precedence: PolicyDeny, then PolicyAsk, then PolicyAllow, then Fallback (DefaultPermissionPolicy() if nil).
+// Precedence: PolicyDeny, then PolicyAsk, then PolicyAllow, then active skill allowed-tools,
+// then Fallback (DefaultPermissionPolicy() if nil).
 type PermissionRules struct {
 	Allow    []string
 	Ask      []string
@@ -72,6 +78,8 @@ func (r PermissionRules) Check(ctx context.Context, s ToolSpec, c ToolCall) Poli
 		return PolicyAsk
 	case matchRules(r.Allow, s, c):
 		return PolicyAllow
+	case matchRules(ActiveSkillAllowedTools(ctx), s, c):
+		return PolicyAllow
 	}
 	if r.Fallback != nil {
 		return r.Fallback.Check(ctx, s, c)
@@ -86,8 +94,31 @@ func matchRules(patterns []string, s ToolSpec, c ToolCall) bool {
 			toolPattern := p[:idx]
 			argPattern := strings.TrimSuffix(p[idx+1:], ")")
 			if match([]string{toolPattern}, s.Name) {
-				if ok, _ := path.Match(argPattern, string(c.Arguments)); ok || strings.Contains(string(c.Arguments), strings.Trim(argPattern, "*")) {
+				argStr := string(c.Arguments)
+				if ok, _ := path.Match(argPattern, argStr); ok {
 					return true
+				}
+				trimmed := strings.Trim(argPattern, "*")
+				if trimmed != "" && strings.Contains(argStr, trimmed) {
+					return true
+				}
+				// Also handle command prefix patterns like Bash(git:*) or Bash(jq:*)
+				colonPrefix := strings.TrimSuffix(trimmed, ":")
+				if colonPrefix != "" {
+					var argMap map[string]any
+					if json.Unmarshal(c.Arguments, &argMap) == nil {
+						for _, field := range []string{"command", "cmd", "script", "input", "query"} {
+							if val, ok := argMap[field].(string); ok {
+								val = strings.TrimSpace(val)
+								if val == colonPrefix || strings.HasPrefix(val, colonPrefix+" ") {
+									return true
+								}
+							}
+						}
+					}
+					if strings.Contains(argStr, `"`+colonPrefix+` `) || strings.Contains(argStr, `"`+colonPrefix+`"`) {
+						return true
+					}
 				}
 			}
 			continue

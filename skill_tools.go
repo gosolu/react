@@ -39,6 +39,9 @@ func (r *SkillRegistry) Tools() []Tool {
 					return TextResult(fmt.Sprintf("Skill %q is already active; its instructions are above.", s.Name)), nil
 				}
 				rc.Set(key, true)
+				if len(s.AllowedTools) > 0 {
+					AddSkillAllowedTools(rc, s.AllowedTools...)
+				}
 			}
 			body, err := s.Body()
 			if err != nil {
@@ -48,6 +51,9 @@ func (r *SkillRegistry) Tools() []Tool {
 			fmt.Fprintf(&b, "<skill name=%q>\n%s\n</skill>\n", s.Name, body)
 			if len(s.AllowedTools) > 0 {
 				fmt.Fprintf(&b, "\nAllowed tools for this skill: %s\n", strings.Join(s.AllowedTools, ", "))
+			}
+			if s.Compatibility != "" {
+				fmt.Fprintf(&b, "\nCompatibility: %s\n", s.Compatibility)
 			}
 			if files, err := s.Files(); err == nil && len(files) > 0 {
 				fmt.Fprintf(&b, "\nBundled files (read with %s): %s\n", ReadFileToolName, strings.Join(files, ", "))
