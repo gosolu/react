@@ -79,8 +79,8 @@ func (s *FileStore) Append(ctx context.Context, sessionID string, msgs ...Messag
 		return fmt.Errorf("react: failed to read session file: %w", err)
 	}
 
-	all := append(existing, CloneMessages(msgs)...)
-	return s.atomicWrite(sessionID, all)
+	existing = append(existing, CloneMessages(msgs)...)
+	return s.atomicWrite(sessionID, existing)
 }
 
 // Replace overwrites the message history of sessionID.

@@ -89,10 +89,8 @@ func (r PermissionRules) Check(ctx context.Context, s ToolSpec, c ToolCall) Poli
 
 func matchRules(patterns []string, s ToolSpec, c ToolCall) bool {
 	for _, p := range patterns {
-		if strings.Contains(p, "(") && strings.HasSuffix(p, ")") {
-			idx := strings.Index(p, "(")
-			toolPattern := p[:idx]
-			argPattern := strings.TrimSuffix(p[idx+1:], ")")
+		if toolPattern, rest, ok := strings.Cut(p, "("); ok && strings.HasSuffix(rest, ")") {
+			argPattern := strings.TrimSuffix(rest, ")")
 			if match([]string{toolPattern}, s.Name) {
 				argStr := string(c.Arguments)
 				if ok, _ := path.Match(argPattern, argStr); ok {

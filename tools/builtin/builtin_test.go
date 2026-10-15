@@ -70,6 +70,18 @@ func TestBuiltinTools(t *testing.T) {
 		t.Fatalf("expected 'outside allowed directory' error, got %v", err)
 	}
 
+	// Try reading via symlink pointing outside sandbox
+	symlinkPath := filepath.Join(sandboxedDir, "symlink_leak.txt")
+	if symErr := os.Symlink(targetFile, symlinkPath); symErr == nil {
+		_, err = sbRead.Call(ctx, json.RawMessage(`{"path":"`+symlinkPath+`"}`))
+		if err == nil {
+			t.Fatal("expected symlink escape read to fail")
+		}
+		if !strings.Contains(err.Error(), "outside allowed directory") {
+			t.Fatalf("expected outside allowed directory error, got %v", err)
+		}
+	}
+
 	// Verify annotations
 	if !readTool.Spec().Annotations.ReadOnly {
 		t.Fatal("read_file should be ReadOnly")

@@ -177,12 +177,12 @@ func TestValidateSpecification(t *testing.T) {
 	}
 
 	invalidNames := []string{
-		"PDF-Processing", // uppercase
-		"-pdf",           // starts with hyphen
-		"pdf-",           // ends with hyphen
-		"pdf--proc",      // consecutive hyphens
-		"pdf_proc",       // underscore not allowed
-		"",               // empty
+		"PDF-Processing",        // uppercase
+		"-pdf",                  // starts with hyphen
+		"pdf-",                  // ends with hyphen
+		"pdf--proc",             // consecutive hyphens
+		"pdf_proc",              // underscore not allowed
+		"",                      // empty
 		strings.Repeat("a", 65), // > 64 chars
 	}
 	for _, n := range invalidNames {
@@ -317,13 +317,13 @@ Use git safely.
 
 func TestSkillDirectoryHelpers(t *testing.T) {
 	fsys := fstest.MapFS{
-		"my-skill/SKILL.md":                {Data: []byte("---\nname: my-skill\ndescription: A test skill\n---\nbody")},
-		"my-skill/scripts/extract.py":      {Data: []byte("print(1)")},
-		"my-skill/scripts/merge.sh":        {Data: []byte("echo 1")},
-		"my-skill/references/GUIDE.md":     {Data: []byte("# Guide")},
-		"my-skill/references/FORMS.md":     {Data: []byte("# Forms")},
-		"my-skill/assets/template.json":    {Data: []byte("{}")},
-		"my-skill/extra.txt":               {Data: []byte("extra")},
+		"my-skill/SKILL.md":             {Data: []byte("---\nname: my-skill\ndescription: A test skill\n---\nbody")},
+		"my-skill/scripts/extract.py":   {Data: []byte("print(1)")},
+		"my-skill/scripts/merge.sh":     {Data: []byte("echo 1")},
+		"my-skill/references/GUIDE.md":  {Data: []byte("# Guide")},
+		"my-skill/references/FORMS.md":  {Data: []byte("# Forms")},
+		"my-skill/assets/template.json": {Data: []byte("{}")},
+		"my-skill/extra.txt":            {Data: []byte("extra")},
 	}
 
 	skill, err := NewSkill(fsys, "my-skill")
@@ -351,4 +351,3 @@ func TestSkillDirectoryHelpers(t *testing.T) {
 		t.Errorf("unexpected StandardSkillDirs: %v", dirs)
 	}
 }
-

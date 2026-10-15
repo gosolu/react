@@ -68,6 +68,11 @@ func resolvePath(baseDir, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	realBase, err := filepath.EvalSymlinks(absBase)
+	if err != nil {
+		realBase = absBase
+	}
+
 	target := clean
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(absBase, target)
@@ -78,7 +83,27 @@ func resolvePath(baseDir, path string) (string, error) {
 	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
 		return "", fmt.Errorf("access denied: path %q is outside allowed directory %q", path, baseDir)
 	}
+
+	// Verify symlinks do not escape baseDir
+	realTarget := evalSymlinksAncestor(target)
+	realRel, err := filepath.Rel(realBase, realTarget)
+	if err != nil || strings.HasPrefix(realRel, "..") || realRel == ".." {
+		return "", fmt.Errorf("access denied: path %q resolves outside allowed directory %q", path, baseDir)
+	}
+
 	return target, nil
+}
+
+func evalSymlinksAncestor(p string) string {
+	if realPath, err := filepath.EvalSymlinks(p); err == nil {
+		return realPath
+	}
+	dir := filepath.Dir(p)
+	if dir == p || dir == "." || dir == "/" {
+		return p
+	}
+	realDir := evalSymlinksAncestor(dir)
+	return filepath.Join(realDir, filepath.Base(p))
 }
 
 type readFileInput struct {

@@ -17,10 +17,10 @@ import (
 
 // Errors returned by the agent.
 var (
-	ErrMaxTurns         = errors.New("agent: max turns exceeded")
-	ErrMaxDepth         = errors.New("agent: max sub-agent depth exceeded")
-	ErrNoProvider       = errors.New("agent: provider is required")
-	ErrAgentClosed      = errors.New("agent: closed")
+	ErrMaxTurns    = errors.New("agent: max turns exceeded")
+	ErrMaxDepth    = errors.New("agent: max sub-agent depth exceeded")
+	ErrNoProvider  = errors.New("agent: provider is required")
+	ErrAgentClosed = errors.New("agent: closed")
 )
 
 // Agent is an immutable, concurrency-safe agent. Create with New.
@@ -35,18 +35,23 @@ type Agent struct {
 
 	approvalMu   sync.Mutex
 	sessionMu    sync.Mutex
-	sessionGates map[string]chan struct{}
+	sessionGates map[string]*sessionGate
 	closeOnce    sync.Once
+}
+
+type sessionGate struct {
+	ch       chan struct{}
+	refCount int
 }
 
 // New builds an agent, initialising plugins and loading skills.
 func New(opts ...Option) (*Agent, error) {
 	cfg := config{
-		name:        "agent",
-		maxTurns:    20,
-		maxParallel: 4,
-		toolTimeout: 2 * time.Minute,
-		maxDepth:    3,
+		name:          "agent",
+		maxTurns:      20,
+		maxParallel:   4,
+		toolTimeout:   2 * time.Minute,
+		maxDepth:      3,
 		maxToolOutput: 64 * 1024,
 	}
 	for _, o := range opts {
@@ -138,19 +143,33 @@ func (a *Agent) lockSession(ctx context.Context, id string) (func(), error) {
 	}
 	a.sessionMu.Lock()
 	if a.sessionGates == nil {
-		a.sessionGates = make(map[string]chan struct{})
+		a.sessionGates = make(map[string]*sessionGate)
 	}
 	gate, ok := a.sessionGates[id]
 	if !ok {
-		gate = make(chan struct{}, 1)
+		gate = &sessionGate{ch: make(chan struct{}, 1)}
 		a.sessionGates[id] = gate
 	}
+	gate.refCount++
 	a.sessionMu.Unlock()
 
+	cleanup := func() {
+		a.sessionMu.Lock()
+		gate.refCount--
+		if gate.refCount == 0 {
+			delete(a.sessionGates, id)
+		}
+		a.sessionMu.Unlock()
+	}
+
 	select {
-	case gate <- struct{}{}:
-		return func() { <-gate }, nil
+	case gate.ch <- struct{}{}:
+		return func() {
+			<-gate.ch
+			cleanup()
+		}, nil
 	case <-ctx.Done():
+		cleanup()
 		return nil, ctx.Err()
 	}
 }

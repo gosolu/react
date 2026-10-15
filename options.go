@@ -8,26 +8,26 @@ import (
 type Option func(*config)
 
 type config struct {
-	name          string
-	provider      Provider
-	model         string
-	system        string
-	tools         []Tool
-	middleware    []ToolMiddleware
-	skillSources  []SkillSource
-	plugins       []Plugin
-	pluginConfig  map[string]any
-	hooks         HookChain
-	store         Store
-	ctxManager    ContextManager
-	contextBudget int
-	policy        PermissionPolicy
-	approver      PermissionApprover
-	maxTurns      int
-	maxParallel   int
-	toolTimeout   time.Duration
-	maxTokens     int
-	temperature   *float64
+	name              string
+	provider          Provider
+	model             string
+	system            string
+	tools             []Tool
+	middleware        []ToolMiddleware
+	skillSources      []SkillSource
+	plugins           []Plugin
+	pluginConfig      map[string]any
+	hooks             HookChain
+	store             Store
+	ctxManager        ContextManager
+	contextBudget     int
+	policy            PermissionPolicy
+	approver          PermissionApprover
+	maxTurns          int
+	maxParallel       int
+	toolTimeout       time.Duration
+	maxTokens         int
+	temperature       *float64
 	maxDepth          int
 	strictSkills      bool
 	maxToolOutput     int

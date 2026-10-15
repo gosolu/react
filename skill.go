@@ -200,8 +200,8 @@ func (s *Skill) Validate() error {
 	}
 	if s.dir != "" && s.dir != "." {
 		expected := path.Base(s.dir)
-		if s.Frontmatter.Name != expected {
-			return fmt.Errorf("skill name %q does not match parent directory name %q", s.Frontmatter.Name, expected)
+		if s.Name != expected {
+			return fmt.Errorf("skill name %q does not match parent directory name %q", s.Name, expected)
 		}
 	}
 	return nil

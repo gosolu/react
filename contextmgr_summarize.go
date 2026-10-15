@@ -31,6 +31,7 @@ type ContextSummarizer struct {
 
 	mu    sync.Mutex
 	cache map[string]string
+	keys  []string
 }
 
 // Fit implements ContextManager.
@@ -122,8 +123,13 @@ func (s *ContextSummarizer) summarize(ctx context.Context, msgs []Message) (stri
 	if s.cache == nil {
 		s.cache = map[string]string{}
 	}
-	if len(s.cache) > 64 {
-		clear(s.cache)
+	if _, exists := s.cache[key]; !exists {
+		if len(s.cache) >= 64 && len(s.keys) > 0 {
+			oldest := s.keys[0]
+			s.keys = s.keys[1:]
+			delete(s.cache, oldest)
+		}
+		s.keys = append(s.keys, key)
 	}
 	s.cache[key] = text
 	s.mu.Unlock()
