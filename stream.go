@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"iter"
 	"strings"
+	"unicode/utf8"
 )
 
 // StreamEventType identifies a StreamEvent.
@@ -189,8 +190,16 @@ func chunk(s string, n int) []string {
 	}
 	var out []string
 	for len(s) > n {
-		out = append(out, s[:n])
-		s = s[n:]
+		cut := n
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		if cut == 0 {
+			_, size := utf8.DecodeRuneInString(s)
+			cut = size
+		}
+		out = append(out, s[:cut])
+		s = s[cut:]
 	}
 	if len(s) > 0 {
 		out = append(out, s)

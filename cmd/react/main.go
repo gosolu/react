@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/gosolu/react"
+	"github.com/gosolu/react/pkg/utf8util"
 	"github.com/gosolu/react/provider"
 	"github.com/gosolu/react/provider/anthropic"
 	"github.com/gosolu/react/provider/deepseek"
@@ -240,7 +241,7 @@ func main() {
 func summarize(s string) string {
 	s = strings.TrimSpace(s)
 	if len(s) > 100 {
-		return s[:97] + "..."
+		return utf8util.TruncateString(s, 97) + "..."
 	}
 	return s
 }

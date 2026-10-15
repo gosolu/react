@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/gosolu/react/pkg/utf8util"
 )
 
 type emitFunc func(Event) bool
@@ -324,7 +326,7 @@ func (a *Agent) runTools(ctx context.Context, rc *RunContext, reg *ToolRegistry,
 			for j, p := range res.Content {
 				if p.Type == PartText && len(p.Text) > a.cfg.maxToolOutput {
 					origLen := len(p.Text)
-					res.Content[j].Text = fmt.Sprintf("%s\n...[output truncated from %d bytes]", p.Text[:a.cfg.maxToolOutput], origLen)
+					res.Content[j].Text = fmt.Sprintf("%s\n...[output truncated from %d bytes]", utf8util.TruncateString(p.Text, a.cfg.maxToolOutput), origLen)
 				}
 			}
 		}

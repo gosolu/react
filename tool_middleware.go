@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"time"
+
+	"github.com/gosolu/react/pkg/utf8util"
 )
 
 // ToolHandler executes a tool call.
@@ -39,7 +41,8 @@ func TruncateMiddleware(maxBytes int) ToolMiddleware {
 			res, err := next(ctx, call)
 			for i, p := range res.Content {
 				if p.Type == PartText && len(p.Text) > maxBytes {
-					res.Content[i].Text = fmt.Sprintf("%s\n...[truncated %d bytes]", p.Text[:maxBytes], len(p.Text)-maxBytes)
+					truncated := utf8util.TruncateString(p.Text, maxBytes)
+					res.Content[i].Text = fmt.Sprintf("%s\n...[truncated %d bytes]", truncated, len(p.Text)-len(truncated))
 				}
 			}
 			return res, err

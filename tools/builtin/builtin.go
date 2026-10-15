@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gosolu/react"
+	"github.com/gosolu/react/pkg/utf8util"
 )
 
 // Option configures builtin tools.
@@ -131,7 +132,7 @@ func ReadFile(opts ...any) react.Tool {
 			return "", err
 		}
 		if int64(len(data)) > maxSize {
-			return string(data[:maxSize]) + "\n...[truncated]", nil
+			return string(utf8util.TruncateBytes(data, int(maxSize))) + "\n...[truncated]", nil
 		}
 		return string(data), nil
 	}, defaultOpts...)

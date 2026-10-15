@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/gosolu/react/pkg/utf8util"
 )
 
 // DefaultSummaryPrompt instructs the model how to compact history.
@@ -145,7 +147,7 @@ func Render(msgs []Message, maxResult int) string {
 		case RoleTool:
 			t := m.Text()
 			if maxResult > 0 && len(t) > maxResult {
-				t = t[:maxResult] + "...[truncated]"
+				t = utf8util.TruncateString(t, maxResult) + "...[truncated]"
 			}
 			status := "result"
 			if m.IsError {

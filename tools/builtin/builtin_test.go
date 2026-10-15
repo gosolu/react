@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/gosolu/react/tools/builtin"
 )
@@ -97,4 +98,30 @@ func TestBuiltinTools(t *testing.T) {
 	}
 
 	_ = os.RemoveAll(tmp)
+}
+
+func TestReadFileUTF8Truncation(t *testing.T) {
+	tmp := t.TempDir()
+	targetFile := filepath.Join(tmp, "utf8_test.txt")
+	// "你好世界！" = 5 chars * 3 bytes = 15 bytes
+	if err := os.WriteFile(targetFile, []byte("你好世界！"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// maxSize = 8 bytes. "你好" is 6 bytes. Third char "世" ends at 9 bytes.
+	// So 8 bytes should truncate to "你好" (6 bytes) without corrupting "世".
+	readTool := builtin.ReadFile(builtin.WithMaxFileSize(8))
+	res, err := readTool.Call(context.Background(), json.RawMessage(`{"path":"`+targetFile+`"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("read_file failed: %v", err)
+	}
+
+	txt := res.Text()
+	if !utf8.ValidString(txt) {
+		t.Fatalf("read_file result contains invalid UTF-8: %q", txt)
+	}
+	expected := "你好\n...[truncated]"
+	if txt != expected {
+		t.Fatalf("got %q, want %q", txt, expected)
+	}
 }

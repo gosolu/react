@@ -2,7 +2,11 @@
 // model provider implementations.
 package provider
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/gosolu/react/pkg/utf8util"
+)
 
 // APIError is returned when a provider responds with a non-success status.
 type APIError struct {
@@ -14,7 +18,7 @@ type APIError struct {
 func (e *APIError) Error() string {
 	body := e.Body
 	if len(body) > 500 {
-		body = body[:500] + "..."
+		body = utf8util.TruncateString(body, 500) + "..."
 	}
 	return fmt.Sprintf("%s: HTTP %d: %s", e.Provider, e.StatusCode, body)
 }

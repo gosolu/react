@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/gosolu/react/pkg/utf8util"
 )
 
 // Tool names registered by the skill system.
@@ -78,7 +80,7 @@ func (r *SkillRegistry) Tools() []Tool {
 				return ErrorResult(fmt.Sprintf("%s is a binary file (%d bytes)", in.Path, len(data))), nil
 			}
 			if len(data) > maxSkillFileBytes {
-				return TextResult(string(data[:maxSkillFileBytes]) + "\n...[truncated]"), nil
+				return TextResult(string(utf8util.TruncateBytes(data, maxSkillFileBytes)) + "\n...[truncated]"), nil
 			}
 			return TextResult(string(data)), nil
 		}, ReadOnly())
