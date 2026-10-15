@@ -19,7 +19,7 @@ type RunContext struct {
 
 	mu      sync.Mutex
 	values  map[string]any
-	context []string // pending additional context for the model (Claude-style system reminders)
+	context []string // pending additional context for the model (e.g. system reminders)
 }
 
 // Set stores run-scoped state (concurrency-safe).
@@ -115,8 +115,8 @@ type HookApprovalDecision struct {
 	UpdatedArguments json.RawMessage
 }
 
-// Hooks is a comprehensive set of optional lifecycle callbacks matching the Claude Code
-// hook lifecycle model. Any field may be nil.
+// Hooks is a comprehensive set of optional lifecycle callbacks for the agent run lifecycle.
+// Any field may be nil.
 //
 // Lifecycle points:
 //   - Session/Run: OnRunStart, OnRunEnd

@@ -57,7 +57,7 @@ type Message struct {
 	Role    Role   `json:"role"`
 	Content []Part `json:"content,omitempty"`
 
-	// Reasoning is model reasoning/thinking text (DeepSeek reasoner, Claude extended thinking, etc.).
+	// Reasoning is model reasoning/thinking text (e.g. DeepSeek reasoner, Claude extended thinking).
 	Reasoning string `json:"reasoning,omitempty"`
 	// ReasoningSignature holds the provider-specific cryptographic signature (e.g. Anthropic).
 	ReasoningSignature string `json:"reasoning_signature,omitempty"`

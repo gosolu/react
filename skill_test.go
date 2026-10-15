@@ -123,7 +123,7 @@ func TestAgentSkillsSpecificationParse(t *testing.T) {
 name: pdf-processing
 description: Extract PDF text, fill forms, merge files. Use when handling PDFs.
 license: Apache-2.0
-compatibility: Designed for Claude Code (or similar products)
+compatibility: Designed for agent runtime (or similar products)
 metadata:
   author: example-org
   version: "1.0"
@@ -145,7 +145,7 @@ Follow step-by-step guidance.
 	if fm.License != "Apache-2.0" {
 		t.Errorf("expected license 'Apache-2.0', got %q", fm.License)
 	}
-	if fm.Compatibility != "Designed for Claude Code (or similar products)" {
+	if fm.Compatibility != "Designed for agent runtime (or similar products)" {
 		t.Errorf("unexpected compatibility: %q", fm.Compatibility)
 	}
 	if len(fm.AllowedTools) != 3 {

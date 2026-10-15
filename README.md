@@ -28,7 +28,7 @@ Features a unified ReAct (Reasoning + Acting) loop with support for both streami
   - Directory-traversal protected `read_skill_file` tool.
 - **In-Process Plugins:**
   - Modular plugins can register tools, middleware, skills, hooks, and system prompt fragments.
-- **Comprehensive Lifecycle Hooks (Claude Code Architecture):**
+- **Comprehensive Lifecycle Hooks:**
   - Prompt & Turn: `BeforePrompt` (block/transform input), `BeforeStop` (block stopping to enforce verification), `OnStopFailure`.
   - Tool Execution: `BeforeTool` (allow, deny, override result, rewrite arguments, inject context), `AfterTool`, `OnToolFailure`, `AfterToolBatch`.
   - Matcher Patterns: `MatchTool`, `MatchToolAfter` glob matching.
@@ -245,14 +245,14 @@ func (p *MyPlugin) Init(ctx context.Context, r react.Registrar) error {
 
 ---
 
-## Lifecycle Hooks (Claude Code Architecture)
+## Lifecycle Hooks
 
 Attach granular lifecycle hooks via `react.WithHooks(...)` to control prompts, tool calls, model requests, and termination:
 
 ```go
 agent, _ := react.New(
     react.WithProvider(provider),
-    react.WithModel("claude-3-7-sonnet"),
+    react.WithModel("gpt-4o"),
     react.WithTools(tools...),
     react.WithHooks(react.Hooks{
         // 1. Inspect or sanitize user prompts before agent processes them
