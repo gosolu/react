@@ -1,4 +1,4 @@
-package deepseek_test
+package deepseek
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/gosolu/react"
-	"github.com/gosolu/react/provider/deepseek"
 )
 
 func TestDeepSeekGenerate(t *testing.T) {
@@ -45,7 +44,7 @@ func TestDeepSeekGenerate(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := deepseek.New(deepseek.Config{
+	p := New(Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
@@ -55,7 +54,7 @@ func TestDeepSeekGenerate(t *testing.T) {
 	}
 
 	resp, err := p.Generate(context.Background(), &react.Request{
-		Model:    deepseek.ModelChat,
+		Model:    ModelChat,
 		Messages: []react.Message{react.UserText("hello")},
 	})
 	if err != nil {
@@ -98,7 +97,7 @@ func TestDeepSeekGenerateVision(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := deepseek.New(deepseek.Config{
+	p := New(Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
@@ -113,7 +112,7 @@ func TestDeepSeekGenerateVision(t *testing.T) {
 	}
 
 	resp, err := p.Generate(context.Background(), &react.Request{
-		Model:    deepseek.ModelFlash,
+		Model:    ModelFlash,
 		Messages: []react.Message{userMsg},
 	})
 	if err != nil {
@@ -177,13 +176,13 @@ func TestDeepSeekGenerateReasoning(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := deepseek.New(deepseek.Config{
+	p := New(Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
 
 	resp, err := p.Generate(context.Background(), &react.Request{
-		Model:    deepseek.ModelReasoner,
+		Model:    ModelReasoner,
 		Messages: []react.Message{react.UserText("solve")},
 	})
 	if err != nil {
@@ -222,13 +221,13 @@ data: [DONE]
 	}))
 	defer ts.Close()
 
-	p := deepseek.New(deepseek.Config{
+	p := New(Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
 
 	var acc react.Accumulator
-	for ev, err := range p.Stream(context.Background(), &react.Request{Model: deepseek.ModelReasoner}) {
+	for ev, err := range p.Stream(context.Background(), &react.Request{Model: ModelReasoner}) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -283,8 +282,8 @@ func TestDeepSeekFinishReasons(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			p := deepseek.New(deepseek.Config{APIKey: "k", BaseURL: ts.URL})
-			resp, err := p.Generate(context.Background(), &react.Request{Model: deepseek.ModelChat, Messages: []react.Message{react.UserText("test")}})
+			p := New(Config{APIKey: "k", BaseURL: ts.URL})
+			resp, err := p.Generate(context.Background(), &react.Request{Model: ModelChat, Messages: []react.Message{react.UserText("test")}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -323,13 +322,13 @@ func TestDeepSeekResponsesGenerate(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := deepseek.NewResponses(deepseek.Config{
+	p := NewResponses(Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
 
 	resp, err := p.Generate(context.Background(), &react.Request{
-		Model:    deepseek.ModelFlash,
+		Model:    ModelFlash,
 		Messages: []react.Message{react.UserText("hi")},
 	})
 	if err != nil {
@@ -366,13 +365,13 @@ data: [DONE]
 	}))
 	defer ts.Close()
 
-	p := deepseek.NewResponses(deepseek.Config{
+	p := NewResponses(Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
 
 	var acc react.Accumulator
-	for ev, err := range p.Stream(context.Background(), &react.Request{Model: deepseek.ModelReasoner}) {
+	for ev, err := range p.Stream(context.Background(), &react.Request{Model: ModelReasoner}) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -426,13 +425,13 @@ func TestDeepSeekCachedTokensAndReasoningPersistence(t *testing.T) {
 		}),
 	}
 
-	p := deepseek.New(deepseek.Config{
+	p := New(Config{
 		APIKey:     "test-key",
 		HTTPClient: mockClient,
 	})
 
 	req := &react.Request{
-		Model: deepseek.ModelReasoner,
+		Model: ModelReasoner,
 		Messages: []react.Message{
 			react.UserText("solve this"),
 			{

@@ -1,4 +1,4 @@
-package openai_test
+package openai
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/gosolu/react"
-	"github.com/gosolu/react/provider/openai"
 )
 
 func TestOpenAIGenerate(t *testing.T) {
@@ -42,7 +41,7 @@ func TestOpenAIGenerate(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := openai.New(openai.Config{
+	p := New(Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
@@ -88,7 +87,7 @@ data: [DONE]
 	}))
 	defer ts.Close()
 
-	p := openai.New(openai.Config{
+	p := New(Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
@@ -146,7 +145,7 @@ func TestOpenAIFinishReasons(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			p := openai.New(openai.Config{APIKey: "k", BaseURL: ts.URL})
+			p := New(Config{APIKey: "k", BaseURL: ts.URL})
 			resp, err := p.Generate(context.Background(), &react.Request{Model: "gpt-4o", Messages: []react.Message{react.UserText("test")}})
 			if err != nil {
 				t.Fatal(err)
@@ -188,7 +187,7 @@ func TestOpenAIResponsesGenerate(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := openai.NewResponses(openai.Config{
+	p := NewResponses(Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
@@ -231,7 +230,7 @@ data: [DONE]
 	}))
 	defer ts.Close()
 
-	p := openai.NewResponses(openai.Config{
+	p := NewResponses(Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
@@ -286,7 +285,7 @@ func TestOpenAICachedTokensAndMultimodalToolResult(t *testing.T) {
 		}),
 	}
 
-	p := openai.New(openai.Config{
+	p := New(Config{
 		APIKey:     "test-key",
 		HTTPClient: mockClient,
 	})

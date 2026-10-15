@@ -1,4 +1,4 @@
-package builtin_test
+package builtin
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/gosolu/react/tools/builtin"
 )
 
 func TestBuiltinTools(t *testing.T) {
@@ -18,35 +17,35 @@ func TestBuiltinTools(t *testing.T) {
 
 	// 1. Write file
 	targetFile := filepath.Join(tmp, "sub", "test.txt")
-	writeTool := builtin.WriteFile()
+	writeTool := WriteFile()
 	res, err := writeTool.Call(ctx, json.RawMessage(`{"path":"`+targetFile+`","content":"hello world"}`))
 	if err != nil || res.IsError {
 		t.Fatalf("write_file failed: %v, text=%s", err, res.Text())
 	}
 
 	// 2. Read file
-	readTool := builtin.ReadFile()
+	readTool := ReadFile()
 	res, err = readTool.Call(ctx, json.RawMessage(`{"path":"`+targetFile+`"}`))
 	if err != nil || res.IsError || res.Text() != "hello world" {
 		t.Fatalf("read_file failed: %v, text=%s", err, res.Text())
 	}
 
 	// 3. List dir
-	listTool := builtin.ListDir()
+	listTool := ListDir()
 	res, err = listTool.Call(ctx, json.RawMessage(`{"path":"`+tmp+`"}`))
 	if err != nil || res.IsError || !strings.Contains(res.Text(), "sub") {
 		t.Fatalf("list_dir failed: %v, text=%s", err, res.Text())
 	}
 
 	// 4. Shell
-	shellTool := builtin.Shell()
+	shellTool := Shell()
 	res, err = shellTool.Call(ctx, json.RawMessage(`{"command":"echo 'hello shell'"}`))
 	if err != nil || res.IsError || !strings.Contains(res.Text(), "hello shell") {
 		t.Fatalf("shell failed: %v, text=%s", err, res.Text())
 	}
 
 	// 5. Edit file
-	editTool := builtin.EditFile()
+	editTool := EditFile()
 	res, err = editTool.Call(ctx, json.RawMessage(`{"path":"`+targetFile+`","old_string":"world","new_string":"gopher"}`))
 	if err != nil || res.IsError {
 		t.Fatalf("edit_file failed: %v, text=%s", err, res.Text())
@@ -59,7 +58,7 @@ func TestBuiltinTools(t *testing.T) {
 	// 6. Sandboxing with WithBaseDir
 	sandboxedDir := filepath.Join(tmp, "sandbox")
 	_ = os.MkdirAll(sandboxedDir, 0755)
-	sandboxedTools := builtin.NewFilesystem(sandboxedDir)
+	sandboxedTools := NewFilesystem(sandboxedDir)
 	sbRead := sandboxedTools[0]
 
 	// Try reading outside sandbox
@@ -110,7 +109,7 @@ func TestReadFileUTF8Truncation(t *testing.T) {
 
 	// maxSize = 8 bytes. "你好" is 6 bytes. Third char "世" ends at 9 bytes.
 	// So 8 bytes should truncate to "你好" (6 bytes) without corrupting "世".
-	readTool := builtin.ReadFile(builtin.WithMaxFileSize(8))
+	readTool := ReadFile(WithMaxFileSize(8))
 	res, err := readTool.Call(context.Background(), json.RawMessage(`{"path":"`+targetFile+`"}`))
 	if err != nil || res.IsError {
 		t.Fatalf("read_file failed: %v", err)

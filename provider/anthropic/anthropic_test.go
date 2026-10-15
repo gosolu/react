@@ -1,4 +1,4 @@
-package anthropic_test
+package anthropic
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/gosolu/react"
-	"github.com/gosolu/react/provider/anthropic"
 )
 
 func TestAnthropicGenerate(t *testing.T) {
@@ -40,7 +39,7 @@ func TestAnthropicGenerate(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := anthropic.New(anthropic.Config{
+	p := New(Config{
 		APIKey:  "ant-key",
 		BaseURL: ts.URL,
 	})
@@ -95,7 +94,7 @@ data: {"type":"message_stop"}
 	}))
 	defer ts.Close()
 
-	p := anthropic.New(anthropic.Config{
+	p := New(Config{
 		APIKey:  "ant-key",
 		BaseURL: ts.URL,
 	})
@@ -162,7 +161,7 @@ func TestAnthropicThinkingAndTurnCollapse(t *testing.T) {
 		}),
 	}
 
-	p := anthropic.New(anthropic.Config{
+	p := New(Config{
 		APIKey:     "ant-key",
 		HTTPClient: mockClient,
 	})
@@ -278,7 +277,7 @@ func TestAnthropicPromptCache(t *testing.T) {
 		}),
 	}
 
-	p := anthropic.New(anthropic.Config{
+	p := New(Config{
 		APIKey:      "ant-key",
 		PromptCache: true,
 		HTTPClient:  mockClient,
