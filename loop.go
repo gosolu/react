@@ -325,20 +325,18 @@ func (a *Agent) runTools(ctx context.Context, rc *RunContext, reg *ToolRegistry,
 
 	msgs := make([]Message, len(results))
 	for i, cr := range results {
-		res := cr.Result
-		if a.cfg.maxToolOutput > 0 {
-			for j, p := range res.Content {
-				if p.Type == PartText && len(p.Text) > a.cfg.maxToolOutput {
-					origLen := len(p.Text)
-					res.Content[j].Text = fmt.Sprintf("%s\n...[output truncated from %d bytes]", utf8util.TruncateString(p.Text, a.cfg.maxToolOutput), origLen)
-				}
+		content := make([]Part, len(cr.Result.Content))
+		for j, p := range cr.Result.Content {
+			if a.cfg.maxToolOutput > 0 && p.Type == PartText && len(p.Text) > a.cfg.maxToolOutput {
+				origLen := len(p.Text)
+				p.Text = fmt.Sprintf("%s\n...[output truncated from %d bytes]", utf8util.TruncateString(p.Text, a.cfg.maxToolOutput), origLen)
 			}
+			content[j] = p
 		}
-		content := res.Content
 		if len(content) == 0 {
 			content = []Part{TextPart("(no output)")}
 		}
-		msgs[i] = ToolResultMessage(cr.Call.ID, cr.Call.Name, content, res.IsError)
+		msgs[i] = ToolResultMessage(cr.Call.ID, cr.Call.Name, content, cr.Result.IsError)
 	}
 	_ = a.hooks.AfterToolBatch(ctx, rc, results)
 	return msgs

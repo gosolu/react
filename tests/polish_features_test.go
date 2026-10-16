@@ -300,3 +300,39 @@ func TestStreamResponseReasoningSignature(t *testing.T) {
 		t.Fatalf("expected ReasoningSignature 'crypto_sig_999', got %q", accumResp.Message.ReasoningSignature)
 	}
 }
+
+func TestStreamToolResult_DataRace(t *testing.T) {
+	ctx := context.Background()
+
+	bigTool := react.NewTool("generate_big", "generates big output", func(ctx context.Context, in struct{}) (string, error) {
+		return strings.Repeat("race_test_output_", 50), nil
+	})
+
+	for range 20 {
+		p := mock.New(
+			mock.ToolCalls("calling...", mock.Call("generate_big", `{}`)),
+			mock.Text("done"),
+		)
+
+		a, err := react.New(
+			react.WithProvider(p),
+			react.WithTools(bigTool),
+			react.WithMaxToolOutput(30),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for ev, err := range a.Stream(ctx, "race-sess", "run big") {
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ev.Type == react.EventToolResult && ev.ToolResult != nil {
+				_ = ev.ToolResult.Text()
+				for _, part := range ev.ToolResult.Content {
+					_ = len(part.Text)
+				}
+			}
+		}
+	}
+}
