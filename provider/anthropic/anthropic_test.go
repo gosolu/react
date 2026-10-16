@@ -318,3 +318,80 @@ func TestAnthropicPromptCache(t *testing.T) {
 		t.Errorf("expected last tool to have cache_control, got nil")
 	}
 }
+
+func TestAnthropicImageURL(t *testing.T) {
+	var capturedBody map[string]any
+	mockClient := &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			b, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(b, &capturedBody)
+			resp := messagesResponse{
+				ID:         "msg_img",
+				Type:       "message",
+				Role:       "assistant",
+				Content:    []contentBlock{{Type: "text", Text: "image seen"}},
+				StopReason: "end_turn",
+			}
+			data, _ := json.Marshal(resp)
+			return &http.Response{
+				StatusCode: 200,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(string(data))),
+			}, nil
+		}),
+	}
+
+	p := New(Config{
+		APIKey:     "ant-key",
+		HTTPClient: mockClient,
+	})
+
+	userMsg := react.Message{
+		Role: react.RoleUser,
+		Content: []react.Part{
+			react.TextPart("look at this:"),
+			react.ImageURLPart("https://example.com/diagram.png"),
+		},
+	}
+	toolMsg := react.ToolResultMessage("tu_1", "camera", []react.Part{
+		react.ImageURLPart("https://example.com/photo.png"),
+	}, false)
+
+	req := &react.Request{
+		Model:    "claude-3-5-sonnet",
+		Messages: []react.Message{userMsg, toolMsg},
+	}
+
+	_, err := p.Generate(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, ok := capturedBody["messages"].([]any)
+	if !ok || len(msgs) != 1 {
+		t.Fatalf("expected 1 collapsed user message, got %+v", capturedBody["messages"])
+	}
+
+	// Verify user message image
+	userParts := msgs[0].(map[string]any)["content"].([]any)
+	if len(userParts) < 3 {
+		t.Fatalf("expected at least 3 content blocks, got %+v", userParts)
+	}
+	imgPart := userParts[1].(map[string]any)
+	if imgPart["type"] != "image" {
+		t.Fatalf("expected type image, got %v", imgPart["type"])
+	}
+	source := imgPart["source"].(map[string]any)
+	if source["type"] != "url" || source["url"] != "https://example.com/diagram.png" {
+		t.Fatalf("expected URL source, got %+v", source)
+	}
+
+	// Verify tool result image
+	toolRes := userParts[2].(map[string]any)
+	toolContentList := toolRes["content"].([]any)
+	toolImgPart := toolContentList[0].(map[string]any)
+	toolImgSource := toolImgPart["source"].(map[string]any)
+	if toolImgSource["type"] != "url" || toolImgSource["url"] != "https://example.com/photo.png" {
+		t.Fatalf("expected tool URL source, got %+v", toolImgSource)
+	}
+}

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
-
 )
 
 func TestBuiltinTools(t *testing.T) {
@@ -68,6 +67,12 @@ func TestBuiltinTools(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "outside allowed directory") {
 		t.Fatalf("expected 'outside allowed directory' error, got %v", err)
+	}
+
+	// Try reading a directory
+	_, err = readTool.Call(ctx, json.RawMessage(`{"path":"`+tmp+`"}`))
+	if err == nil || !strings.Contains(err.Error(), "is a directory") {
+		t.Fatalf("expected 'is a directory' error, got %v", err)
 	}
 
 	// Try reading via symlink pointing outside sandbox

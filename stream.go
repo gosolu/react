@@ -147,10 +147,22 @@ func (a *Accumulator) Response() *Response {
 // chunk). Useful for providers without native streaming and for tests.
 func StreamResponse(resp *Response, chunkSize int) iter.Seq2[StreamEvent, error] {
 	return func(yield func(StreamEvent, error) bool) {
-		if resp.Reasoning != "" {
-			for _, c := range chunk(resp.Reasoning, chunkSize) {
-				if !yield(StreamEvent{Type: StreamReasoningDelta, Text: c}, nil) {
+		sig := resp.Message.ReasoningSignature
+		if resp.Reasoning != "" || sig != "" {
+			chunks := chunk(resp.Reasoning, chunkSize)
+			if len(chunks) == 0 {
+				if !yield(StreamEvent{Type: StreamReasoningDelta, Signature: sig}, nil) {
 					return
+				}
+			} else {
+				for i, c := range chunks {
+					chunkSig := ""
+					if i == len(chunks)-1 {
+						chunkSig = sig
+					}
+					if !yield(StreamEvent{Type: StreamReasoningDelta, Text: c, Signature: chunkSig}, nil) {
+						return
+					}
 				}
 			}
 		}

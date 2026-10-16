@@ -268,22 +268,32 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 				case react.PartText:
 					content = append(content, map[string]any{"type": "text", "text": part.Text})
 				case react.PartImage:
-					mediaType := part.MIMEType
-					if mediaType == "" {
-						mediaType = "image/jpeg"
+					if part.ImageURL != "" {
+						content = append(content, map[string]any{
+							"type": "image",
+							"source": map[string]any{
+								"type": "url",
+								"url":  part.ImageURL,
+							},
+						})
+					} else {
+						mediaType := part.MIMEType
+						if mediaType == "" {
+							mediaType = "image/jpeg"
+						}
+						var b64Data string
+						if len(part.Data) > 0 {
+							b64Data = base64.StdEncoding.EncodeToString(part.Data)
+						}
+						content = append(content, map[string]any{
+							"type": "image",
+							"source": map[string]any{
+								"type":       "base64",
+								"media_type": mediaType,
+								"data":       b64Data,
+							},
+						})
 					}
-					var b64Data string
-					if len(part.Data) > 0 {
-						b64Data = base64.StdEncoding.EncodeToString(part.Data)
-					}
-					content = append(content, map[string]any{
-						"type": "image",
-						"source": map[string]any{
-							"type":       "base64",
-							"media_type": mediaType,
-							"data":       b64Data,
-						},
-					})
 				}
 			}
 			messages = append(messages, map[string]any{
@@ -340,22 +350,32 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 					case react.PartText:
 						parts = append(parts, map[string]any{"type": "text", "text": p.Text})
 					case react.PartImage:
-						mediaType := p.MIMEType
-						if mediaType == "" {
-							mediaType = "image/jpeg"
+						if p.ImageURL != "" {
+							parts = append(parts, map[string]any{
+								"type": "image",
+								"source": map[string]any{
+									"type": "url",
+									"url":  p.ImageURL,
+								},
+							})
+						} else {
+							mediaType := p.MIMEType
+							if mediaType == "" {
+								mediaType = "image/jpeg"
+							}
+							var b64Data string
+							if len(p.Data) > 0 {
+								b64Data = base64.StdEncoding.EncodeToString(p.Data)
+							}
+							parts = append(parts, map[string]any{
+								"type": "image",
+								"source": map[string]any{
+									"type":       "base64",
+									"media_type": mediaType,
+									"data":       b64Data,
+								},
+							})
 						}
-						var b64Data string
-						if len(p.Data) > 0 {
-							b64Data = base64.StdEncoding.EncodeToString(p.Data)
-						}
-						parts = append(parts, map[string]any{
-							"type": "image",
-							"source": map[string]any{
-								"type":       "base64",
-								"media_type": mediaType,
-								"data":       b64Data,
-							},
-						})
 					}
 				}
 				resBody = parts

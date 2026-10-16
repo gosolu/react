@@ -97,26 +97,25 @@ func matchRules(patterns []string, s ToolSpec, c ToolCall) bool {
 					return true
 				}
 				trimmed := strings.Trim(argPattern, "*")
-				if trimmed != "" && strings.Contains(argStr, trimmed) {
-					return true
-				}
-				// Also handle command prefix patterns like Bash(git:*) or Bash(jq:*)
-				colonPrefix := strings.TrimSuffix(trimmed, ":")
-				if colonPrefix != "" {
-					var argMap map[string]any
-					if json.Unmarshal(c.Arguments, &argMap) == nil {
-						for _, field := range []string{"command", "cmd", "script", "input", "query"} {
-							if val, ok := argMap[field].(string); ok {
-								val = strings.TrimSpace(val)
-								if val == colonPrefix || strings.HasPrefix(val, colonPrefix+" ") {
-									return true
+				if strings.HasSuffix(trimmed, ":") {
+					colonPrefix := strings.TrimSuffix(trimmed, ":")
+					if colonPrefix != "" {
+						var argMap map[string]any
+						if json.Unmarshal(c.Arguments, &argMap) == nil {
+							for _, field := range []string{"command", "cmd", "script", "input", "query"} {
+								if val, ok := argMap[field].(string); ok {
+									val = strings.TrimSpace(val)
+									if val == colonPrefix || strings.HasPrefix(val, colonPrefix+" ") {
+										if !strings.ContainsAny(val, ";&|`$\n\r") {
+											return true
+										}
+									}
 								}
 							}
 						}
 					}
-					if strings.Contains(argStr, `"`+colonPrefix+` `) || strings.Contains(argStr, `"`+colonPrefix+`"`) {
-						return true
-					}
+				} else if trimmed != "" && strings.Contains(argStr, trimmed) {
+					return true
 				}
 			}
 			continue

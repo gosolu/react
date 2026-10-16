@@ -10,12 +10,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"iter"
-	"maps"
 	"net/http"
 	"strings"
 
@@ -172,7 +169,7 @@ func (p *Provider) generateResponses(ctx context.Context, req *react.Request) (*
 }
 
 func (p *Provider) generateChatCompletions(ctx context.Context, req *react.Request) (*react.Response, error) {
-	bodyMap := p.buildRequestBody(req, false)
+	bodyMap := provider.BuildChatCompletionsRequestBody(req, false)
 	data, err := json.Marshal(bodyMap)
 	if err != nil {
 		return nil, fmt.Errorf("opencode: marshal request: %w", err)
@@ -192,40 +189,7 @@ func (p *Provider) generateChatCompletions(ctx context.Context, req *react.Reque
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	var chatResp chatCompletionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return nil, fmt.Errorf("opencode: decode response: %w", err)
-	}
-
-	if len(chatResp.Choices) == 0 {
-		return nil, fmt.Errorf("opencode: empty choices returned")
-	}
-
-	choice := chatResp.Choices[0]
-	msg := react.Message{
-		Role: react.RoleAssistant,
-	}
-	if choice.Message.Content != "" {
-		msg.Content = []react.Part{react.TextPart(choice.Message.Content)}
-	}
-	for _, tc := range choice.Message.ToolCalls {
-		msg.ToolCalls = append(msg.ToolCalls, react.ToolCall{
-			ID:        tc.ID,
-			Name:      tc.Function.Name,
-			Arguments: json.RawMessage(tc.Function.Arguments),
-		})
-	}
-
-	msg.Reasoning = choice.Message.ReasoningContent
-	return &react.Response{
-		Message:    msg,
-		Reasoning:  choice.Message.ReasoningContent,
-		StopReason: mapFinishReason(choice.FinishReason),
-		Usage: react.Usage{
-			InputTokens:  chatResp.Usage.PromptTokens,
-			OutputTokens: chatResp.Usage.CompletionTokens,
-		},
-	}, nil
+	return provider.ParseChatCompletionsResponse(resp.Body)
 }
 
 // Stream implements react.Provider (server-sent events).
@@ -271,7 +235,7 @@ func (p *Provider) streamResponses(ctx context.Context, req *react.Request) iter
 
 func (p *Provider) streamChatCompletions(ctx context.Context, req *react.Request) iter.Seq2[react.StreamEvent, error] {
 	return func(yield func(react.StreamEvent, error) bool) {
-		bodyMap := p.buildRequestBody(req, true)
+		bodyMap := provider.BuildChatCompletionsRequestBody(req, true)
 		data, err := json.Marshal(bodyMap)
 		if err != nil {
 			yield(react.StreamEvent{}, fmt.Errorf("opencode: marshal request: %w", err))
@@ -294,74 +258,9 @@ func (p *Provider) streamChatCompletions(ctx context.Context, req *react.Request
 		}
 		defer func() { _ = resp.Body.Close() }()
 
-		seenTools := make(map[int]bool)
-
-		for sse, err := range provider.ReadSSE(resp.Body) {
-			if err != nil {
-				if err != io.EOF && ctx.Err() == nil {
-					yield(react.StreamEvent{}, err)
-				}
+		for ev, err := range provider.StreamChatCompletions(ctx, resp.Body) {
+			if !yield(ev, err) {
 				return
-			}
-			if sse.Data == "[DONE]" {
-				return
-			}
-			var chunk chatCompletionChunk
-			if err := json.Unmarshal([]byte(sse.Data), &chunk); err != nil {
-				continue
-			}
-			if chunk.Usage != nil {
-				u := react.Usage{
-					InputTokens:  chunk.Usage.PromptTokens,
-					OutputTokens: chunk.Usage.CompletionTokens,
-				}
-				if !yield(react.StreamEvent{Type: react.StreamUsage, Usage: &u}, nil) {
-					return
-				}
-			}
-			if len(chunk.Choices) == 0 {
-				continue
-			}
-			choice := chunk.Choices[0]
-			if choice.Delta.ReasoningContent != "" {
-				if !yield(react.StreamEvent{Type: react.StreamReasoningDelta, Text: choice.Delta.ReasoningContent}, nil) {
-					return
-				}
-			}
-			if choice.Delta.Content != "" {
-				if !yield(react.StreamEvent{Type: react.StreamTextDelta, Text: choice.Delta.Content}, nil) {
-					return
-				}
-			}
-			for _, tc := range choice.Delta.ToolCalls {
-				if !seenTools[tc.Index] {
-					seenTools[tc.Index] = true
-					if !yield(react.StreamEvent{
-						Type:       react.StreamToolCallStart,
-						Index:      tc.Index,
-						ToolCallID: tc.ID,
-						ToolName:   tc.Function.Name,
-					}, nil) {
-						return
-					}
-				}
-				if tc.Function.Arguments != "" {
-					if !yield(react.StreamEvent{
-						Type:      react.StreamToolCallDelta,
-						Index:     tc.Index,
-						ArgsDelta: tc.Function.Arguments,
-					}, nil) {
-						return
-					}
-				}
-			}
-			if choice.FinishReason != "" {
-				if !yield(react.StreamEvent{
-					Type:       react.StreamDone,
-					StopReason: mapFinishReason(choice.FinishReason),
-				}, nil) {
-					return
-				}
 			}
 		}
 	}
@@ -388,183 +287,6 @@ func (p *Provider) setHeaders(req *http.Request, sessionID string) {
 	}
 }
 
-func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]any {
-	body := make(map[string]any)
-	maps.Copy(body, req.Extra)
-
-	body["model"] = req.Model
-	body["stream"] = stream
-	if stream {
-		body["stream_options"] = map[string]any{"include_usage": true}
-	}
-	if req.MaxTokens > 0 {
-		body["max_tokens"] = req.MaxTokens
-	}
-	if req.Temperature != nil {
-		body["temperature"] = *req.Temperature
-	}
-
-	var messages []map[string]any
-	if req.System != "" {
-		messages = append(messages, map[string]any{
-			"role":    "system",
-			"content": req.System,
-		})
-	}
-
-	for _, m := range req.Messages {
-		switch m.Role {
-		case react.RoleSystem:
-			messages = append(messages, map[string]any{
-				"role":    "system",
-				"content": m.Text(),
-			})
-		case react.RoleUser:
-			var content any = m.Text()
-			var hasImages bool
-			for _, part := range m.Content {
-				if part.Type == react.PartImage {
-					hasImages = true
-					break
-				}
-			}
-			if hasImages {
-				var parts []map[string]any
-				for _, part := range m.Content {
-					switch part.Type {
-					case react.PartText:
-						parts = append(parts, map[string]any{
-							"type": "text",
-							"text": part.Text,
-						})
-					case react.PartImage:
-						url := part.ImageURL
-						if url == "" && len(part.Data) > 0 {
-							url = fmt.Sprintf("data:%s;base64,%s", part.MIMEType, base64.StdEncoding.EncodeToString(part.Data))
-						}
-						parts = append(parts, map[string]any{
-							"type": "image_url",
-							"image_url": map[string]string{
-								"url": url,
-							},
-						})
-					}
-				}
-				content = parts
-			}
-			messages = append(messages, map[string]any{
-				"role":    "user",
-				"content": content,
-			})
-		case react.RoleAssistant:
-			msgObj := map[string]any{
-				"role":    "assistant",
-				"content": m.Text(),
-			}
-			if m.Reasoning != "" {
-				msgObj["reasoning_content"] = m.Reasoning
-			}
-			if len(m.ToolCalls) > 0 {
-				var tcs []map[string]any
-				for _, tc := range m.ToolCalls {
-					tcs = append(tcs, map[string]any{
-						"id":   tc.ID,
-						"type": "function",
-						"function": map[string]any{
-							"name":      tc.Name,
-							"arguments": string(tc.Arguments),
-						},
-					})
-				}
-				msgObj["tool_calls"] = tcs
-			}
-			messages = append(messages, msgObj)
-		case react.RoleTool:
-			var toolContent any = m.Text()
-			var hasImages bool
-			for _, p := range m.Content {
-				if p.Type == react.PartImage {
-					hasImages = true
-					break
-				}
-			}
-			if hasImages {
-				var parts []map[string]any
-				for _, p := range m.Content {
-					switch p.Type {
-					case react.PartText:
-						parts = append(parts, map[string]any{"type": "text", "text": p.Text})
-					case react.PartImage:
-						url := p.ImageURL
-						if url == "" && len(p.Data) > 0 {
-							url = fmt.Sprintf("data:%s;base64,%s", p.MIMEType, base64.StdEncoding.EncodeToString(p.Data))
-						}
-						parts = append(parts, map[string]any{
-							"type": "image_url",
-							"image_url": map[string]string{
-								"url": url,
-							},
-						})
-					}
-				}
-				toolContent = parts
-			}
-			messages = append(messages, map[string]any{
-				"role":         "tool",
-				"tool_call_id": m.ToolCallID,
-				"content":      toolContent,
-			})
-		}
-	}
-	body["messages"] = messages
-
-	if len(req.Tools) > 0 {
-		var tools []map[string]any
-		for _, t := range req.Tools {
-			tools = append(tools, map[string]any{
-				"type": "function",
-				"function": map[string]any{
-					"name":        t.Name,
-					"description": t.Description,
-					"parameters":  t.InputSchema,
-				},
-			})
-		}
-		body["tools"] = tools
-
-		if req.ToolChoice != "" {
-			switch req.ToolChoice {
-			case react.ToolChoiceAuto, react.ToolChoiceNone, react.ToolChoiceRequired:
-				body["tool_choice"] = req.ToolChoice
-			default:
-				body["tool_choice"] = map[string]any{
-					"type": "function",
-					"function": map[string]string{
-						"name": req.ToolChoice,
-					},
-				}
-			}
-		}
-	}
-
-	return body
-}
-
-func mapFinishReason(r string) react.StopReason {
-	switch r {
-	case "stop":
-		return react.StopEnd
-	case "tool_calls", "function_call":
-		return react.StopToolCall
-	case "length":
-		return react.StopLength
-	case "content_filter":
-		return react.StopContentFilter
-	default:
-		return react.StopOther
-	}
-}
-
 func generateUUID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
@@ -573,8 +295,6 @@ func generateUUID() string {
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
-
-// Wire structures for OpenAI-compatible JSON API.
 
 type chatCompletionResponse struct {
 	Choices []struct {
@@ -598,25 +318,4 @@ type chatCompletionResponse struct {
 	} `json:"usage"`
 }
 
-type chatCompletionChunk struct {
-	Choices []struct {
-		Delta struct {
-			Role             string `json:"role"`
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"`
-			ToolCalls        []struct {
-				Index    int    `json:"index"`
-				ID       string `json:"id"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
-	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-	} `json:"usage"`
-}
+func mapFinishReason(r string) react.StopReason { return provider.MapFinishReason(r) }

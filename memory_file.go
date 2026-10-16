@@ -74,6 +74,8 @@ func (s *FileStore) Append(ctx context.Context, sessionID string, msgs ...Messag
 		var rec fileSessionRecord
 		if err := json.Unmarshal(data, &rec); err == nil {
 			existing = rec.Messages
+		} else {
+			return fmt.Errorf("react: failed to parse session file: %w", err)
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("react: failed to read session file: %w", err)

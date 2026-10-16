@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -150,8 +151,11 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 		a.hooks.PostCompact(ctx, rc, len(history), len(msgs))
 
 		if a.cfg.persistCompaction && sessionID != "" && len(msgs) < len(history) {
-			history = msgs
-			_ = a.cfg.store.Replace(context.WithoutCancel(ctx), sessionID, history)
+			history = slices.Clone(msgs)
+			if err := a.cfg.store.Replace(context.WithoutCancel(ctx), sessionID, history); err != nil {
+				return result, fmt.Errorf("agent: persist compaction: %w", err)
+			}
+			pending = nil
 		}
 
 		if reminders := rc.ConsumeContext(); len(reminders) > 0 {
@@ -406,10 +410,10 @@ func (a *Agent) handleCall(ctx context.Context, rc *RunContext, reg *ToolRegistr
 	default:
 		res, err = exec(ctx, call)
 		if err != nil {
-			res = errorResult(err, res)
 			if ferr := a.hooks.ToolFailure(ctx, rc, call, err); ferr != nil {
 				return res, ferr
 			}
+			return res, err
 		}
 	}
 	if err := a.hooks.AfterTool(ctx, rc, call, &res); err != nil {
@@ -419,8 +423,6 @@ func (a *Agent) handleCall(ctx context.Context, rc *RunContext, reg *ToolRegistr
 }
 
 func (a *Agent) askApproval(ctx context.Context, spec ToolSpec, call ToolCall, emit emitFunc) (bool, error) {
-	req := ApprovalRequest{AgentName: a.cfg.name, Spec: spec, Call: call}
-	emit(Event{Type: EventApprovalRequested, ToolCall: &call, Approval: &req})
 	if a.cfg.approver == nil {
 		return false, nil
 	}
@@ -429,17 +431,9 @@ func (a *Agent) askApproval(ctx context.Context, spec ToolSpec, call ToolCall, e
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	req := ApprovalRequest{AgentName: a.cfg.name, Spec: spec, Call: call}
+	emit(Event{Type: EventApprovalRequested, ToolCall: &call, Approval: &req})
 	return a.cfg.approver.Approve(ctx, req)
-}
-
-func errorResult(err error, partial ToolResult) ToolResult {
-	msg := err.Error()
-	if errors.Is(err, context.DeadlineExceeded) {
-		msg = "tool call timed out"
-	}
-	partial.IsError = true
-	partial.Content = append([]Part{TextPart("Error: " + msg)}, partial.Content...)
-	return partial
 }
 
 func newID() string {

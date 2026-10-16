@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -127,7 +128,20 @@ func ReadFile(opts ...any) react.Tool {
 		if err != nil {
 			return "", err
 		}
-		data, err := os.ReadFile(target)
+		info, err := os.Stat(target)
+		if err != nil {
+			return "", err
+		}
+		if info.IsDir() {
+			return "", fmt.Errorf("%s is a directory", in.Path)
+		}
+		f, err := os.Open(target)
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = f.Close() }()
+
+		data, err := io.ReadAll(io.LimitReader(f, maxSize+1))
 		if err != nil {
 			return "", err
 		}
