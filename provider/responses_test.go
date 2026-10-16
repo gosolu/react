@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -193,5 +195,46 @@ data: [DONE]
 	}
 	if resp.Usage.InputTokens != 5 || resp.Usage.OutputTokens != 12 {
 		t.Errorf("unexpected usage: %+v", resp.Usage)
+	}
+}
+
+func TestStreamResponses_Error(t *testing.T) {
+	sseData := `event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"Hello"}
+
+event: error
+data: {"error":{"message":"Model failure"}}
+`
+	var errFound error
+	for _, err := range StreamResponses(context.Background(), strings.NewReader(sseData)) {
+		if err != nil {
+			errFound = err
+			break
+		}
+	}
+	if errFound == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(errFound.Error(), "Model failure") {
+		t.Fatalf("expected 'Model failure' in error, got %v", errFound)
+	}
+}
+
+func TestStreamResponses_UnexpectedEOF(t *testing.T) {
+	sseData := `event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"Half finished"}
+`
+	var errFound error
+	for _, err := range StreamResponses(context.Background(), strings.NewReader(sseData)) {
+		if err != nil {
+			errFound = err
+			break
+		}
+	}
+	if errFound == nil {
+		t.Fatal("expected io.ErrUnexpectedEOF, got nil")
+	}
+	if !errors.Is(errFound, io.ErrUnexpectedEOF) {
+		t.Fatalf("expected io.ErrUnexpectedEOF, got %v", errFound)
 	}
 }

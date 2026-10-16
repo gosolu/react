@@ -140,6 +140,7 @@ func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[rea
 		defer func() { _ = resp.Body.Close() }()
 
 		var currentUsage react.Usage
+		var finishedCleanly bool
 
 		for sse, err := range provider.ReadSSE(resp.Body) {
 			if err != nil {
@@ -148,6 +149,33 @@ func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[rea
 				}
 				return
 			}
+
+			// Check for error event type or error JSON payload
+			if sse.Event == "error" || strings.Contains(sse.Data, `"error"`) {
+				var errPayload struct {
+					Type  string `json:"type"`
+					Error *struct {
+						Type    string `json:"type"`
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				if json.Unmarshal([]byte(sse.Data), &errPayload) == nil && (errPayload.Type == "error" || (errPayload.Error != nil && errPayload.Error.Message != "")) {
+					msg := "anthropic stream error"
+					if errPayload.Error != nil && errPayload.Error.Message != "" {
+						msg = errPayload.Error.Message
+						if errPayload.Error.Type != "" {
+							msg = fmt.Sprintf("%s (%s)", msg, errPayload.Error.Type)
+						}
+					}
+					yield(react.StreamEvent{}, fmt.Errorf("anthropic stream error: %s", msg))
+					return
+				}
+				if sse.Event == "error" {
+					yield(react.StreamEvent{}, fmt.Errorf("anthropic stream error: %s", sse.Data))
+					return
+				}
+			}
+
 			switch sse.Event {
 			case "message_start":
 				var start messageStartEvent
@@ -204,6 +232,7 @@ func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[rea
 						return
 					}
 					if msgDelta.Delta.StopReason != "" {
+						finishedCleanly = true
 						if !yield(react.StreamEvent{
 							Type:       react.StreamDone,
 							StopReason: mapStopReason(msgDelta.Delta.StopReason),
@@ -215,6 +244,10 @@ func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[rea
 			case "message_stop":
 				return
 			}
+		}
+
+		if !finishedCleanly && ctx.Err() == nil {
+			yield(react.StreamEvent{}, io.ErrUnexpectedEOF)
 		}
 	}
 }

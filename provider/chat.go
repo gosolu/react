@@ -8,6 +8,7 @@ import (
 	"io"
 	"iter"
 	"maps"
+	"strings"
 
 	"github.com/gosolu/react"
 )
@@ -305,6 +306,7 @@ func ParseChatCompletionsResponse(r io.Reader) (*react.Response, error) {
 func StreamChatCompletions(ctx context.Context, r io.Reader) iter.Seq2[react.StreamEvent, error] {
 	return func(yield func(react.StreamEvent, error) bool) {
 		seenTools := make(map[int]bool)
+		var finishedCleanly bool
 
 		for sse, err := range ReadSSE(r) {
 			if err != nil {
@@ -316,8 +318,36 @@ func StreamChatCompletions(ctx context.Context, r io.Reader) iter.Seq2[react.Str
 			if sse.Data == "[DONE]" {
 				return
 			}
+
+			// Check for mid-stream error events or error JSON frames
+			if sse.Event == "error" || strings.Contains(sse.Data, `"error"`) {
+				var errPayload struct {
+					Error *struct {
+						Message string `json:"message"`
+						Type    string `json:"type"`
+						Code    any    `json:"code"`
+					} `json:"error"`
+				}
+				if json.Unmarshal([]byte(sse.Data), &errPayload) == nil && errPayload.Error != nil && errPayload.Error.Message != "" {
+					msg := errPayload.Error.Message
+					if errPayload.Error.Type != "" {
+						msg = fmt.Sprintf("%s (%s)", msg, errPayload.Error.Type)
+					}
+					yield(react.StreamEvent{}, fmt.Errorf("provider stream error: %s", msg))
+					return
+				}
+				if sse.Event == "error" {
+					yield(react.StreamEvent{}, fmt.Errorf("provider stream error: %s", sse.Data))
+					return
+				}
+			}
+
 			var chunk ChatCompletionChunk
 			if err := json.Unmarshal([]byte(sse.Data), &chunk); err != nil {
+				if s := strings.TrimSpace(sse.Data); s != "" && !strings.HasPrefix(s, ":") {
+					yield(react.StreamEvent{}, fmt.Errorf("provider stream invalid json: %w: %s", err, s))
+					return
+				}
 				continue
 			}
 			if chunk.Usage != nil {
@@ -373,6 +403,7 @@ func StreamChatCompletions(ctx context.Context, r io.Reader) iter.Seq2[react.Str
 				}
 			}
 			if choice.FinishReason != "" {
+				finishedCleanly = true
 				if !yield(react.StreamEvent{
 					Type:       react.StreamDone,
 					StopReason: MapFinishReason(choice.FinishReason),
@@ -380,6 +411,10 @@ func StreamChatCompletions(ctx context.Context, r io.Reader) iter.Seq2[react.Str
 					return
 				}
 			}
+		}
+
+		if !finishedCleanly && ctx.Err() == nil {
+			yield(react.StreamEvent{}, io.ErrUnexpectedEOF)
 		}
 	}
 }

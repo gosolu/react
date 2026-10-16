@@ -315,6 +315,7 @@ func StreamResponses(ctx context.Context, r io.Reader) iter.Seq2[react.StreamEve
 	return func(yield func(react.StreamEvent, error) bool) {
 		seenTools := make(map[int]bool)
 		toolCallSeen := false
+		var finishedCleanly bool
 
 		for sse, err := range ReadSSE(r) {
 			if err != nil {
@@ -325,6 +326,43 @@ func StreamResponses(ctx context.Context, r io.Reader) iter.Seq2[react.StreamEve
 			}
 			if sse.Data == "[DONE]" {
 				return
+			}
+
+			// Check for mid-stream error events or error JSON frames
+			if sse.Event == "error" || strings.Contains(sse.Data, `"error"`) {
+				var errPayload struct {
+					Type  string `json:"type"`
+					Error *struct {
+						Message string `json:"message"`
+						Type    string `json:"type"`
+						Code    any    `json:"code"`
+					} `json:"error"`
+					Response *struct {
+						Status string `json:"status"`
+						Error  *struct {
+							Message string `json:"message"`
+							Type    string `json:"type"`
+						} `json:"error"`
+					} `json:"response"`
+				}
+				if json.Unmarshal([]byte(sse.Data), &errPayload) == nil {
+					if errPayload.Error != nil && errPayload.Error.Message != "" {
+						msg := errPayload.Error.Message
+						if errPayload.Error.Type != "" {
+							msg = fmt.Sprintf("%s (%s)", msg, errPayload.Error.Type)
+						}
+						yield(react.StreamEvent{}, fmt.Errorf("provider stream error: %s", msg))
+						return
+					}
+					if errPayload.Response != nil && errPayload.Response.Error != nil && errPayload.Response.Error.Message != "" {
+						yield(react.StreamEvent{}, fmt.Errorf("provider stream error: %s", errPayload.Response.Error.Message))
+						return
+					}
+				}
+				if sse.Event == "error" {
+					yield(react.StreamEvent{}, fmt.Errorf("provider stream error: %s", sse.Data))
+					return
+				}
 			}
 
 			var base struct {
@@ -341,6 +379,10 @@ func StreamResponses(ctx context.Context, r io.Reader) iter.Seq2[react.StreamEve
 				Response *ResponsesResponseEnvelope `json:"response"`
 			}
 			if err := json.Unmarshal([]byte(sse.Data), &base); err != nil {
+				if s := strings.TrimSpace(sse.Data); s != "" && !strings.HasPrefix(s, ":") {
+					yield(react.StreamEvent{}, fmt.Errorf("provider stream invalid json: %w: %s", err, s))
+					return
+				}
 				continue
 			}
 
@@ -350,6 +392,10 @@ func StreamResponses(ctx context.Context, r io.Reader) iter.Seq2[react.StreamEve
 			}
 
 			switch eventType {
+			case "error", "response.failed":
+				yield(react.StreamEvent{}, fmt.Errorf("provider stream error: %s", sse.Data))
+				return
+
 			case "response.output_text.delta":
 				if base.Delta != "" {
 					if !yield(react.StreamEvent{Type: react.StreamTextDelta, Text: base.Delta}, nil) {
@@ -394,7 +440,8 @@ func StreamResponses(ctx context.Context, r io.Reader) iter.Seq2[react.StreamEve
 					}
 				}
 
-			case "response.completed":
+			case "response.completed", "response.done":
+				finishedCleanly = true
 				if base.Response != nil {
 					if base.Response.Usage != nil {
 						u := react.Usage{
@@ -423,6 +470,10 @@ func StreamResponses(ctx context.Context, r io.Reader) iter.Seq2[react.StreamEve
 					}
 				}
 			}
+		}
+
+		if !finishedCleanly && ctx.Err() == nil {
+			yield(react.StreamEvent{}, io.ErrUnexpectedEOF)
 		}
 	}
 }

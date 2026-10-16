@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -393,5 +394,80 @@ func TestAnthropicImageURL(t *testing.T) {
 	toolImgSource := toolImgPart["source"].(map[string]any)
 	if toolImgSource["type"] != "url" || toolImgSource["url"] != "https://example.com/photo.png" {
 		t.Fatalf("expected tool URL source, got %+v", toolImgSource)
+	}
+}
+
+func TestAnthropicStream_Error(t *testing.T) {
+	sseData := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","usage":{"input_tokens":10,"output_tokens":0}}}
+
+event: error
+data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}
+`
+	p := New(Config{
+		APIKey: "ant-key",
+		HTTPClient: &http.Client{
+			Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: 200,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       io.NopCloser(strings.NewReader(sseData)),
+				}, nil
+			}),
+		},
+	})
+
+	var errFound error
+	for _, err := range p.Stream(context.Background(), &react.Request{Model: "claude-3-5-sonnet"}) {
+		if err != nil {
+			errFound = err
+			break
+		}
+	}
+
+	if errFound == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(errFound.Error(), "Overloaded") {
+		t.Fatalf("expected 'Overloaded' in error, got %v", errFound)
+	}
+}
+
+func TestAnthropicStream_UnexpectedEOF(t *testing.T) {
+	sseData := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","usage":{"input_tokens":10,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Incomplete response"}}
+`
+	p := New(Config{
+		APIKey: "ant-key",
+		HTTPClient: &http.Client{
+			Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: 200,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       io.NopCloser(strings.NewReader(sseData)),
+				}, nil
+			}),
+		},
+	})
+
+	var errFound error
+	for _, err := range p.Stream(context.Background(), &react.Request{Model: "claude-3-5-sonnet"}) {
+		if err != nil {
+			errFound = err
+			break
+		}
+	}
+
+	if errFound == nil {
+		t.Fatal("expected io.ErrUnexpectedEOF, got nil")
+	}
+	if !errors.Is(errFound, io.ErrUnexpectedEOF) {
+		t.Fatalf("expected io.ErrUnexpectedEOF, got %v", errFound)
 	}
 }
