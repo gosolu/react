@@ -89,38 +89,54 @@ func (r PermissionRules) Check(ctx context.Context, s ToolSpec, c ToolCall) Poli
 
 func matchRules(patterns []string, s ToolSpec, c ToolCall) bool {
 	for _, p := range patterns {
-		if toolPattern, rest, ok := strings.Cut(p, "("); ok && strings.HasSuffix(rest, ")") {
-			argPattern := strings.TrimSuffix(rest, ")")
-			if match([]string{toolPattern}, s.Name) {
-				argStr := string(c.Arguments)
-				if ok, _ := path.Match(argPattern, argStr); ok {
-					return true
-				}
-				trimmed := strings.Trim(argPattern, "*")
-				if strings.HasSuffix(trimmed, ":") {
-					colonPrefix := strings.TrimSuffix(trimmed, ":")
-					if colonPrefix != "" {
-						var argMap map[string]any
-						if json.Unmarshal(c.Arguments, &argMap) == nil {
-							for _, field := range []string{"command", "cmd", "script", "input", "query"} {
-								if val, ok := argMap[field].(string); ok {
-									val = strings.TrimSpace(val)
-									if val == colonPrefix || strings.HasPrefix(val, colonPrefix+" ") {
-										if !strings.ContainsAny(val, ";&|`$\n\r") {
-											return true
-										}
-									}
-								}
-							}
-						}
-					}
-				} else if trimmed != "" && strings.Contains(argStr, trimmed) {
-					return true
-				}
-			}
+		if matchRule(p, s, c) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchRule(p string, s ToolSpec, c ToolCall) bool {
+	toolPattern, rest, ok := strings.Cut(p, "(")
+	if !ok || !strings.HasSuffix(rest, ")") {
+		return match([]string{p}, s.Name)
+	}
+
+	if !match([]string{toolPattern}, s.Name) {
+		return false
+	}
+
+	argPattern := strings.TrimSuffix(rest, ")")
+	argStr := string(c.Arguments)
+	if ok, _ := path.Match(argPattern, argStr); ok {
+		return true
+	}
+
+	trimmed := strings.Trim(argPattern, "*")
+	if !strings.HasSuffix(trimmed, ":") {
+		return trimmed != "" && strings.Contains(argStr, trimmed)
+	}
+
+	colonPrefix := strings.TrimSuffix(trimmed, ":")
+	if colonPrefix == "" {
+		return false
+	}
+
+	var argMap map[string]any
+	if err := json.Unmarshal(c.Arguments, &argMap); err != nil {
+		return false
+	}
+
+	for _, field := range []string{"command", "cmd", "script", "input", "query"} {
+		val, ok := argMap[field].(string)
+		if !ok {
 			continue
 		}
-		if match([]string{p}, s.Name) {
+		val = strings.TrimSpace(val)
+		if val != colonPrefix && !strings.HasPrefix(val, colonPrefix+" ") {
+			continue
+		}
+		if !strings.ContainsAny(val, ";&|`$\n\r") {
 			return true
 		}
 	}

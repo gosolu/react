@@ -53,39 +53,9 @@ func BuildResponsesRequestBody(req *react.Request, stream bool) map[string]any {
 				"content": m.Text(),
 			})
 		case react.RoleUser:
-			var content any = m.Text()
-			var hasImages bool
-			for _, part := range m.Content {
-				if part.Type == react.PartImage {
-					hasImages = true
-					break
-				}
-			}
-			if hasImages {
-				var parts []map[string]any
-				for _, part := range m.Content {
-					switch part.Type {
-					case react.PartText:
-						parts = append(parts, map[string]any{
-							"type": "input_text",
-							"text": part.Text,
-						})
-					case react.PartImage:
-						url := part.ImageURL
-						if url == "" && len(part.Data) > 0 {
-							url = fmt.Sprintf("data:%s;base64,%s", part.MIMEType, base64.StdEncoding.EncodeToString(part.Data))
-						}
-						parts = append(parts, map[string]any{
-							"type":      "input_image",
-							"image_url": url,
-						})
-					}
-				}
-				content = parts
-			}
 			input = append(input, map[string]any{
 				"role":    "user",
-				"content": content,
+				"content": buildResponsesPartsContent(m),
 			})
 		case react.RoleAssistant:
 			if m.Reasoning != "" {
@@ -114,40 +84,10 @@ func BuildResponsesRequestBody(req *react.Request, stream bool) map[string]any {
 				})
 			}
 		case react.RoleTool:
-			var output any = m.Text()
-			var hasImages bool
-			for _, p := range m.Content {
-				if p.Type == react.PartImage {
-					hasImages = true
-					break
-				}
-			}
-			if hasImages {
-				var parts []map[string]any
-				for _, p := range m.Content {
-					switch p.Type {
-					case react.PartText:
-						parts = append(parts, map[string]any{
-							"type": "input_text",
-							"text": p.Text,
-						})
-					case react.PartImage:
-						url := p.ImageURL
-						if url == "" && len(p.Data) > 0 {
-							url = fmt.Sprintf("data:%s;base64,%s", p.MIMEType, base64.StdEncoding.EncodeToString(p.Data))
-						}
-						parts = append(parts, map[string]any{
-							"type":      "input_image",
-							"image_url": url,
-						})
-					}
-				}
-				output = parts
-			}
 			input = append(input, map[string]any{
 				"type":    "function_call_output",
 				"call_id": m.ToolCallID,
-				"output":  output,
+				"output":  buildResponsesPartsContent(m),
 			})
 		}
 	}
@@ -179,6 +119,50 @@ func BuildResponsesRequestBody(req *react.Request, stream bool) map[string]any {
 	}
 
 	return body
+}
+
+func buildResponsesPartsContent(m react.Message) any {
+	hasImages := false
+	for _, part := range m.Content {
+		if part.Type == react.PartImage {
+			hasImages = true
+			break
+		}
+	}
+	if !hasImages {
+		return m.Text()
+	}
+
+	parts := make([]map[string]any, 0, len(m.Content))
+	for _, part := range m.Content {
+		switch part.Type {
+		case react.PartText:
+			parts = append(parts, map[string]any{
+				"type": "input_text",
+				"text": part.Text,
+			})
+		case react.PartImage:
+			parts = append(parts, map[string]any{
+				"type":      "input_image",
+				"image_url": resolveResponsesImageURL(part),
+			})
+		}
+	}
+	return parts
+}
+
+func resolveResponsesImageURL(part react.Part) string {
+	if part.ImageURL != "" {
+		return part.ImageURL
+	}
+	if len(part.Data) == 0 {
+		return ""
+	}
+	mime := part.MIMEType
+	if mime == "" {
+		mime = "image/jpeg"
+	}
+	return fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(part.Data))
 }
 
 // ResponsesResponseEnvelope represents the top-level Response object from /responses.

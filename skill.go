@@ -285,51 +285,63 @@ func parseYAMLBlock(lines []yamlLine, start int, baseIndent int) (any, int) {
 	if start >= len(lines) {
 		return nil, start
 	}
-
-	// Sequence block (starts with "- ")
 	if strings.HasPrefix(lines[start].text, "- ") || lines[start].text == "-" {
-		var list []any
-		i := start
-		for i < len(lines) {
-			if lines[i].indent < baseIndent {
-				break
-			}
-			if lines[i].indent > baseIndent {
-				i++
-				continue
-			}
-			if !strings.HasPrefix(lines[i].text, "- ") && lines[i].text != "-" {
-				break
-			}
-			itemText := strings.TrimSpace(strings.TrimPrefix(lines[i].text, "-"))
-			nextIdx := i + 1
-			if nextIdx < len(lines) && lines[nextIdx].indent > lines[i].indent {
-				if itemText == "" {
-					child, nextI := parseYAMLBlock(lines, nextIdx, lines[nextIdx].indent)
-					list = append(list, child)
-					i = nextI
-					continue
-				} else if k, v, ok := splitYAMLKeyVal(itemText); ok {
-					childMap := make(map[string]any)
-					if v != "" {
-						childMap[k] = parseYAMLScalar(v)
-					}
-					sub, nextI := parseYAMLBlock(lines, nextIdx, lines[nextIdx].indent)
-					if sm, ok := sub.(map[string]any); ok {
-						maps.Copy(childMap, sm)
-					}
-					list = append(list, childMap)
-					i = nextI
-					continue
-				}
-			}
+		return parseYAMLSequence(lines, start, baseIndent)
+	}
+	return parseYAMLMapping(lines, start, baseIndent)
+}
+
+func parseYAMLSequence(lines []yamlLine, start int, baseIndent int) ([]any, int) {
+	var list []any
+	i := start
+	for i < len(lines) {
+		if lines[i].indent < baseIndent {
+			break
+		}
+		if lines[i].indent > baseIndent {
+			i++
+			continue
+		}
+		if !strings.HasPrefix(lines[i].text, "- ") && lines[i].text != "-" {
+			break
+		}
+		itemText := strings.TrimSpace(strings.TrimPrefix(lines[i].text, "-"))
+		nextIdx := i + 1
+
+		if nextIdx >= len(lines) || lines[nextIdx].indent <= lines[i].indent {
 			list = append(list, parseYAMLScalar(itemText))
 			i++
+			continue
 		}
-		return list, i
-	}
 
-	// Mapping block
+		if itemText == "" {
+			child, nextI := parseYAMLBlock(lines, nextIdx, lines[nextIdx].indent)
+			list = append(list, child)
+			i = nextI
+			continue
+		}
+
+		if k, v, ok := splitYAMLKeyVal(itemText); ok {
+			childMap := make(map[string]any)
+			if v != "" {
+				childMap[k] = parseYAMLScalar(v)
+			}
+			sub, nextI := parseYAMLBlock(lines, nextIdx, lines[nextIdx].indent)
+			if sm, ok := sub.(map[string]any); ok {
+				maps.Copy(childMap, sm)
+			}
+			list = append(list, childMap)
+			i = nextI
+			continue
+		}
+
+		list = append(list, parseYAMLScalar(itemText))
+		i++
+	}
+	return list, i
+}
+
+func parseYAMLMapping(lines []yamlLine, start int, baseIndent int) (map[string]any, int) {
 	mapping := make(map[string]any)
 	i := start
 	for i < len(lines) {

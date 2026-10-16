@@ -47,42 +47,9 @@ func BuildChatCompletionsRequestBody(req *react.Request, stream bool) map[string
 				"content": m.Text(),
 			})
 		case react.RoleUser:
-			hasImages := false
-			for _, p := range m.Content {
-				if p.Type == react.PartImage {
-					hasImages = true
-					break
-				}
-			}
-			var content any = m.Text()
-			if hasImages {
-				var parts []map[string]any
-				for _, p := range m.Content {
-					switch p.Type {
-					case react.PartText:
-						parts = append(parts, map[string]any{"type": "text", "text": p.Text})
-					case react.PartImage:
-						url := p.ImageURL
-						if url == "" && len(p.Data) > 0 {
-							mime := p.MIMEType
-							if mime == "" {
-								mime = "image/jpeg"
-							}
-							url = fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(p.Data))
-						}
-						parts = append(parts, map[string]any{
-							"type": "image_url",
-							"image_url": map[string]string{
-								"url": url,
-							},
-						})
-					}
-				}
-				content = parts
-			}
 			messages = append(messages, map[string]any{
 				"role":    "user",
-				"content": content,
+				"content": buildChatUserContent(m),
 			})
 		case react.RoleAssistant:
 			msgObj := map[string]any{
@@ -180,6 +147,49 @@ func BuildChatCompletionsRequestBody(req *react.Request, stream bool) map[string
 	}
 
 	return body
+}
+
+func buildChatUserContent(m react.Message) any {
+	hasImages := false
+	for _, p := range m.Content {
+		if p.Type == react.PartImage {
+			hasImages = true
+			break
+		}
+	}
+	if !hasImages {
+		return m.Text()
+	}
+
+	parts := make([]map[string]any, 0, len(m.Content))
+	for _, p := range m.Content {
+		switch p.Type {
+		case react.PartText:
+			parts = append(parts, map[string]any{"type": "text", "text": p.Text})
+		case react.PartImage:
+			parts = append(parts, map[string]any{
+				"type": "image_url",
+				"image_url": map[string]string{
+					"url": resolveChatImageURL(p),
+				},
+			})
+		}
+	}
+	return parts
+}
+
+func resolveChatImageURL(p react.Part) string {
+	if p.ImageURL != "" {
+		return p.ImageURL
+	}
+	if len(p.Data) == 0 {
+		return ""
+	}
+	mime := p.MIMEType
+	if mime == "" {
+		mime = "image/jpeg"
+	}
+	return fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(p.Data))
 }
 
 // MapFinishReason maps an OpenAI-compatible finish reason string to react.StopReason.

@@ -295,43 +295,9 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 
 		switch m.Role {
 		case react.RoleUser:
-			var content []map[string]any
-			for _, part := range m.Content {
-				switch part.Type {
-				case react.PartText:
-					content = append(content, map[string]any{"type": "text", "text": part.Text})
-				case react.PartImage:
-					if part.ImageURL != "" {
-						content = append(content, map[string]any{
-							"type": "image",
-							"source": map[string]any{
-								"type": "url",
-								"url":  part.ImageURL,
-							},
-						})
-					} else {
-						mediaType := part.MIMEType
-						if mediaType == "" {
-							mediaType = "image/jpeg"
-						}
-						var b64Data string
-						if len(part.Data) > 0 {
-							b64Data = base64.StdEncoding.EncodeToString(part.Data)
-						}
-						content = append(content, map[string]any{
-							"type": "image",
-							"source": map[string]any{
-								"type":       "base64",
-								"media_type": mediaType,
-								"data":       b64Data,
-							},
-						})
-					}
-				}
-			}
 			messages = append(messages, map[string]any{
 				"role":    "user",
-				"content": content,
+				"content": buildAnthropicContentBlocks(m.Content),
 			})
 		case react.RoleAssistant:
 			var content []map[string]any
@@ -369,49 +335,8 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 		case react.RoleTool:
 			// In Anthropic, tool results go into a "user" turn with type="tool_result"
 			var resBody any = m.Text()
-			var hasImages bool
-			for _, p := range m.Content {
-				if p.Type == react.PartImage {
-					hasImages = true
-					break
-				}
-			}
-			if hasImages {
-				var parts []map[string]any
-				for _, p := range m.Content {
-					switch p.Type {
-					case react.PartText:
-						parts = append(parts, map[string]any{"type": "text", "text": p.Text})
-					case react.PartImage:
-						if p.ImageURL != "" {
-							parts = append(parts, map[string]any{
-								"type": "image",
-								"source": map[string]any{
-									"type": "url",
-									"url":  p.ImageURL,
-								},
-							})
-						} else {
-							mediaType := p.MIMEType
-							if mediaType == "" {
-								mediaType = "image/jpeg"
-							}
-							var b64Data string
-							if len(p.Data) > 0 {
-								b64Data = base64.StdEncoding.EncodeToString(p.Data)
-							}
-							parts = append(parts, map[string]any{
-								"type": "image",
-								"source": map[string]any{
-									"type":       "base64",
-									"media_type": mediaType,
-									"data":       b64Data,
-								},
-							})
-						}
-					}
-				}
-				resBody = parts
+			if hasImageParts(m.Content) {
+				resBody = buildAnthropicContentBlocks(m.Content)
 			}
 
 			resContent := map[string]any{
@@ -490,6 +415,56 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 	}
 
 	return body
+}
+
+func buildAnthropicContentBlocks(parts []react.Part) []map[string]any {
+	var out []map[string]any
+	for _, p := range parts {
+		switch p.Type {
+		case react.PartText:
+			out = append(out, map[string]any{"type": "text", "text": p.Text})
+		case react.PartImage:
+			out = append(out, buildAnthropicImageBlock(p))
+		}
+	}
+	return out
+}
+
+func buildAnthropicImageBlock(p react.Part) map[string]any {
+	if p.ImageURL != "" {
+		return map[string]any{
+			"type": "image",
+			"source": map[string]any{
+				"type": "url",
+				"url":  p.ImageURL,
+			},
+		}
+	}
+	mediaType := p.MIMEType
+	if mediaType == "" {
+		mediaType = "image/jpeg"
+	}
+	var b64Data string
+	if len(p.Data) > 0 {
+		b64Data = base64.StdEncoding.EncodeToString(p.Data)
+	}
+	return map[string]any{
+		"type": "image",
+		"source": map[string]any{
+			"type":       "base64",
+			"media_type": mediaType,
+			"data":       b64Data,
+		},
+	}
+}
+
+func hasImageParts(parts []react.Part) bool {
+	for _, p := range parts {
+		if p.Type == react.PartImage {
+			return true
+		}
+	}
+	return false
 }
 
 func mapStopReason(r string) react.StopReason {
