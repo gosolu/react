@@ -1,5 +1,7 @@
 package react
 
+import "encoding/json"
+
 // EventType identifies an Event.
 type EventType string
 
@@ -13,6 +15,7 @@ const (
 	EventMessageComplete   EventType = "message_complete"
 	EventToolCallReady     EventType = "tool_call_ready"
 	EventApprovalRequested EventType = "approval_requested"
+	EventToolCallRewritten EventType = "tool_call_rewritten"
 	EventToolResult        EventType = "tool_result"
 	EventTurnEnd           EventType = "turn_end"
 	EventRunEnd            EventType = "run_end"
@@ -27,12 +30,13 @@ type Event struct {
 	Depth int // 0 for the top-level agent
 	Turn  int
 
-	Text string // TextDelta, ReasoningDelta, ToolCallDelta (args fragment)
+	Text string // TextDelta, ReasoningDelta, ToolCallDelta (args fragment), ToolCallRewritten (summary)
 
-	ToolCall   *ToolCall        // ToolCallStart, ToolCallReady, ApprovalRequested, ToolResult
-	ToolIndex  int              // index of the call within the turn
-	ToolResult *ToolResult      // ToolResult
-	Approval   *ApprovalRequest // ApprovalRequested
+	ToolCall     *ToolCall        // ToolCallStart, ToolCallReady, ApprovalRequested, ToolResult, ToolCallRewritten
+	ToolIndex    int              // index of the call within the turn
+	ToolResult   *ToolResult      // ToolResult
+	Approval     *ApprovalRequest // ApprovalRequested
+	OriginalArgs json.RawMessage  // ToolCallRewritten
 
 	Message *Message // MessageComplete
 	Usage   *Usage   // MessageComplete (per call), RunEnd (aggregate)

@@ -3,6 +3,7 @@ package react
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path"
 	"strings"
 	"sync"
@@ -96,6 +97,29 @@ func matchRules(patterns []string, s ToolSpec, c ToolCall) bool {
 	return false
 }
 
+// shellBlockedChars defines characters prohibited in shell commands to prevent
+// command chaining, redirection, parameter/command expansion, quoting bypasses,
+// subshell spawning, globbing, and newline-separated command execution.
+const shellBlockedChars = ";|&><$`\n\r\"'\\(){}*?"
+
+func isShellTool(name string) bool {
+	switch strings.ToLower(name) {
+	case "bash", "sh", "zsh", "shell", "terminal", "exec":
+		return true
+	default:
+		return false
+	}
+}
+
+func getCommandArg(argMap map[string]any) (string, bool) {
+	for _, field := range []string{"command", "cmd", "script"} {
+		if val, ok := argMap[field].(string); ok {
+			return val, true
+		}
+	}
+	return "", false
+}
+
 func matchRule(p string, s ToolSpec, c ToolCall) bool {
 	toolPattern, rest, ok := strings.Cut(p, "(")
 	if !ok || !strings.HasSuffix(rest, ")") {
@@ -107,18 +131,11 @@ func matchRule(p string, s ToolSpec, c ToolCall) bool {
 	}
 
 	argPattern := strings.TrimSuffix(rest, ")")
-	argStr := string(c.Arguments)
-	if ok, _ := path.Match(argPattern, argStr); ok {
+	if argPattern == "" {
 		return true
 	}
 
-	trimmed := strings.Trim(argPattern, "*")
-	if !strings.HasSuffix(trimmed, ":") {
-		return trimmed != "" && strings.Contains(argStr, trimmed)
-	}
-
-	colonPrefix := strings.TrimSuffix(trimmed, ":")
-	if colonPrefix == "" {
+	if len(c.Arguments) == 0 {
 		return false
 	}
 
@@ -127,17 +144,89 @@ func matchRule(p string, s ToolSpec, c ToolCall) bool {
 		return false
 	}
 
-	for _, field := range []string{"command", "cmd", "script", "input", "query"} {
-		val, ok := argMap[field].(string)
-		if !ok {
-			continue
+	cmdVal, hasCmd := getCommandArg(argMap)
+	if isShellTool(s.Name) || hasCmd {
+		if !hasCmd {
+			return false
 		}
-		val = strings.TrimSpace(val)
-		if val != colonPrefix && !strings.HasPrefix(val, colonPrefix+" ") {
-			continue
+		return matchShellCommand(argPattern, cmdVal)
+	}
+
+	return matchStructuredArgs(argPattern, argMap)
+}
+
+func matchShellCommand(argPattern, cmdVal string) bool {
+	cmdVal = strings.TrimSpace(cmdVal)
+	if cmdVal == "" {
+		return false
+	}
+
+	// Reject all redirection, expansion, chaining, and quoting metacharacters.
+	if strings.ContainsAny(cmdVal, shellBlockedChars) {
+		return false
+	}
+
+	cmdTokens := strings.Fields(cmdVal)
+	if len(cmdTokens) == 0 {
+		return false
+	}
+
+	trimmed := strings.Trim(argPattern, "*")
+	if strings.HasSuffix(trimmed, ":") {
+		// Colon prefix form: e.g. "git:*" or "git:"
+		colonPrefix := strings.TrimSuffix(trimmed, ":")
+		prefixTokens := strings.Fields(colonPrefix)
+		if len(prefixTokens) == 0 || len(cmdTokens) < len(prefixTokens) {
+			return false
 		}
-		if !strings.ContainsAny(val, ";&|`$\n\r") {
-			return true
+		for i := range prefixTokens {
+			if cmdTokens[i] != prefixTokens[i] {
+				return false
+			}
+		}
+		return true
+	}
+
+	// For shell tools without the colon prefix form, prefix matching (e.g. "echo *", "git commit*")
+	// is inherently unsound and must default to PolicyAsk.
+	// Only an exact, single command with no wildcards or metacharacters is permitted.
+	if strings.ContainsAny(argPattern, "*?") || strings.ContainsAny(argPattern, shellBlockedChars) {
+		return false
+	}
+
+	patternTokens := strings.Fields(argPattern)
+	if len(patternTokens) == 0 || len(patternTokens) != len(cmdTokens) {
+		return false
+	}
+	for i := range patternTokens {
+		if patternTokens[i] != cmdTokens[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func matchStructuredArgs(argPattern string, argMap map[string]any) bool {
+	if field, valPat, ok := strings.Cut(argPattern, ":"); ok {
+		field = strings.TrimSpace(field)
+		valPat = strings.TrimSpace(valPat)
+		if val, exists := argMap[field]; exists {
+			if valPat == "*" || valPat == "" {
+				return true
+			}
+			strVal := fmt.Sprint(val)
+			if ok, _ := path.Match(valPat, strVal); ok {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, v := range argMap {
+		if strVal, ok := v.(string); ok {
+			if ok, _ := path.Match(argPattern, strVal); ok {
+				return true
+			}
 		}
 	}
 	return false

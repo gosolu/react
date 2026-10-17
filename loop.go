@@ -1,12 +1,14 @@
 package react
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"strings"
 	"sync"
@@ -342,8 +344,17 @@ func (a *Agent) runTools(ctx context.Context, rc *RunContext, reg *ToolRegistry,
 	return msgs
 }
 
-// handleCall applies validation, permission policy, hooks and middleware to a
-// single call.
+func (a *Agent) checkPolicy(ctx context.Context, spec ToolSpec, call ToolCall) PolicyDecision {
+	dec := a.cfg.policy.Check(ctx, spec, call)
+	if dec == PolicyAsk && matchRules(ActiveSkillAllowedTools(ctx), spec, call) {
+		dec = PolicyAllow
+	}
+	return dec
+}
+
+// handleCall applies validation, hooks, permission policy, and middleware to a
+// single call. Hook rewrites (BeforeTool) are applied first, followed by policy
+// evaluation on final arguments.
 func (a *Agent) handleCall(ctx context.Context, rc *RunContext, reg *ToolRegistry, call ToolCall, exec ToolHandler, emit emitFunc) (ToolResult, error) {
 	t, ok := reg.Get(call.Name)
 	if !ok {
@@ -358,25 +369,80 @@ func (a *Agent) handleCall(ctx context.Context, rc *RunContext, reg *ToolRegistr
 	}
 	spec := t.Spec()
 
-	dec := a.cfg.policy.Check(ctx, spec, call)
-	if dec == PolicyAsk && matchRules(ActiveSkillAllowedTools(ctx), spec, call) {
-		dec = PolicyAllow
+	// 1. Apply BeforeTool hook rewrites first so policy evaluates final arguments.
+	origArgs := call.Arguments
+	d, err := a.hooks.BeforeTool(ctx, rc, &call)
+	if err != nil {
+		return ToolResult{}, err
 	}
+	switch d.Action {
+	case HookDeny:
+		reason := d.Reason
+		if reason == "" {
+			reason = "blocked by hook"
+		}
+		return ErrorResult("Error: tool call blocked: " + reason), nil
+	case HookOverride:
+		res := d.Result
+		if err := a.hooks.AfterTool(ctx, rc, call, &res); err != nil {
+			return res, err
+		}
+		return res, nil
+	}
+
+	if !bytes.Equal(call.Arguments, origArgs) {
+		if !json.Valid(call.Arguments) {
+			return ErrorResult(fmt.Sprintf("Error: hook rewrote arguments for %s to invalid JSON: %s", call.Name, call.Arguments)), nil
+		}
+		log.Printf("[audit] tool call %q arguments rewritten by BeforeTool: %s -> %s", call.Name, string(origArgs), string(call.Arguments))
+		emit(Event{
+			Type:         EventToolCallRewritten,
+			ToolCall:     &call,
+			OriginalArgs: origArgs,
+			Text:         fmt.Sprintf("BeforeTool rewrote arguments for %s from %s to %s", call.Name, string(origArgs), string(call.Arguments)),
+		})
+	}
+
+	// 2. Evaluate permission policy on the final arguments.
+	dec := a.checkPolicy(ctx, spec, call)
 
 	switch dec {
 	case PolicyDeny:
 		a.hooks.PermissionDenied(ctx, rc, call, "denied by policy")
 		return ErrorResult("Error: this tool call was denied by policy."), nil
 	case PolicyAsk:
-		dec, decErr := a.hooks.PermissionRequest(ctx, rc, ApprovalRequest{AgentName: a.cfg.name, Spec: spec, Call: call})
+		req := ApprovalRequest{AgentName: a.cfg.name, Spec: spec, Call: call}
+		hookDec, decErr := a.hooks.PermissionRequest(ctx, rc, req)
 		if decErr != nil {
 			return ToolResult{}, decErr
 		}
 		var approved bool
-		if dec.Handled {
-			approved = dec.Approved
-			if len(dec.UpdatedArguments) > 0 {
-				call.Arguments = dec.UpdatedArguments
+		if hookDec.Handled {
+			approved = hookDec.Approved
+			if len(hookDec.UpdatedArguments) > 0 && !bytes.Equal(hookDec.UpdatedArguments, call.Arguments) {
+				reqArgs := call.Arguments
+				call.Arguments = hookDec.UpdatedArguments
+				if !json.Valid(call.Arguments) {
+					return ErrorResult(fmt.Sprintf("Error: OnPermissionRequest rewrote arguments for %s to invalid JSON: %s", call.Name, call.Arguments)), nil
+				}
+				log.Printf("[audit] tool call %q arguments rewritten by OnPermissionRequest: %s -> %s", call.Name, string(reqArgs), string(call.Arguments))
+				emit(Event{
+					Type:         EventToolCallRewritten,
+					ToolCall:     &call,
+					OriginalArgs: reqArgs,
+					Text:         fmt.Sprintf("OnPermissionRequest rewrote arguments for %s from %s to %s", call.Name, string(reqArgs), string(call.Arguments)),
+				})
+
+				// Re-evaluate policy on updated arguments.
+				newDec := a.checkPolicy(ctx, spec, call)
+				if newDec == PolicyDeny {
+					a.hooks.PermissionDenied(ctx, rc, call, "denied by policy after argument rewrite")
+					return ErrorResult("Error: this tool call was denied by policy after argument rewrite."), nil
+				}
+				if newDec == PolicyAsk && !approved {
+					a.hooks.PermissionDenied(ctx, rc, call, "denied by policy")
+					return ErrorResult("Error: this tool call was denied by policy."), nil
+				}
 			}
 		} else {
 			var err error
@@ -391,28 +457,13 @@ func (a *Agent) handleCall(ctx context.Context, rc *RunContext, reg *ToolRegistr
 		}
 	}
 
-	d, err := a.hooks.BeforeTool(ctx, rc, &call)
+	// 3. Execute tool handler with approved final arguments.
+	res, err := exec(ctx, call)
 	if err != nil {
-		return ToolResult{}, err
-	}
-	var res ToolResult
-	switch d.Action {
-	case HookDeny:
-		reason := d.Reason
-		if reason == "" {
-			reason = "blocked by hook"
+		if ferr := a.hooks.ToolFailure(ctx, rc, call, err); ferr != nil {
+			return res, ferr
 		}
-		return ErrorResult("Error: tool call blocked: " + reason), nil
-	case HookOverride:
-		res = d.Result
-	default:
-		res, err = exec(ctx, call)
-		if err != nil {
-			if ferr := a.hooks.ToolFailure(ctx, rc, call, err); ferr != nil {
-				return res, ferr
-			}
-			return res, err
-		}
+		return res, err
 	}
 	if err := a.hooks.AfterTool(ctx, rc, call, &res); err != nil {
 		return res, err
