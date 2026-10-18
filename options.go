@@ -139,8 +139,8 @@ func WithTemperature(t float64) Option { return func(c *config) { c.temperature 
 // WithMaxDepth bounds sub-agent nesting (default 3).
 func WithMaxDepth(n int) Option { return func(c *config) { c.maxDepth = n } }
 
-// WithMaxToolOutput bounds the model-facing text of tool results (default 64KB,
-// 0 disables). EventToolResult still carries the full result.
+// WithMaxToolOutput bounds the text of tool results (default 64KB, 0 disables).
+// EventToolResult and the message history carry the bounded copy.
 func WithMaxToolOutput(bytes int) Option { return func(c *config) { c.maxToolOutput = bytes } }
 
 // WithPersistCompaction enables saving compacted history back to Store when Fit shrinks the history.

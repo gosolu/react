@@ -403,8 +403,7 @@ func (a *Agent) callModel(ctx context.Context, req *Request, stream bool, emit e
 }
 
 // runTools executes a batch of tool calls and returns tool-result messages in
-// call order. The full result is emitted on EventToolResult; the message holds
-// the model-facing copy and may be truncated.
+// call order. EventToolResult and the messages carry the bounded result.
 func (a *Agent) runTools(ctx context.Context, rc *RunContext, reg *ToolRegistry, calls []ToolCall, emit emitFunc) []Message {
 	mws := a.middleware
 	if a.cfg.toolTimeout > 0 {
@@ -425,26 +424,24 @@ func (a *Agent) runTools(ctx context.Context, rc *RunContext, reg *ToolRegistry,
 	}
 	ex := ToolExecutor{MaxParallel: a.cfg.maxParallel}
 	results := ex.Run(ctx, calls, isSeq, pipeline, func(i int, cr *ToolCallResult) {
-		limit := a.toolOutputLimit(reg, cr.Call.Name)
-		full := cr.Result
-		full.Truncated = needsTruncation(full.Content, limit)
-		call := cr.Call
-		emit(Event{Type: EventToolResult, ToolCall: &call, ToolIndex: i, ToolResult: &full, Duration: cr.Duration})
-		cr.Result.Truncated = full.Truncated
+		content, truncated := truncateParts(cr.Result.Content, a.toolOutputLimit(reg, cr.Call.Name))
+		cr.Result.Content = content
+		cr.Result.Truncated = truncated
+		call, res := cr.Call, cr.Result
+		emit(Event{Type: EventToolResult, ToolCall: &call, ToolIndex: i, ToolResult: &res, Duration: cr.Duration})
 	})
 
-	// AfterToolBatch observes the full result plus the Truncated flag.
-	_ = a.hooks.AfterToolBatch(ctx, rc, results)
+	if err := a.hooks.AfterToolBatch(ctx, rc, results); err != nil {
+		// TODO: tool hook error
+	}
 
 	msgs := make([]Message, len(results))
-	for i := range results {
-		content, truncated := truncateParts(results[i].Result.Content, a.toolOutputLimit(reg, results[i].Call.Name))
+	for i, cr := range results {
+		content := cr.Result.Content
 		if len(content) == 0 {
 			content = []Part{TextPart("(no output)")}
 		}
-		results[i].Result.Content = content
-		results[i].Result.Truncated = truncated
-		msgs[i] = ToolResultMessage(results[i].Call.ID, results[i].Call.Name, content, results[i].Result.IsError)
+		msgs[i] = ToolResultMessage(cr.Call.ID, cr.Call.Name, content, cr.Result.IsError)
 	}
 	return msgs
 }
@@ -477,21 +474,7 @@ func emitBudgetToolResults(calls []ToolCall, limit BudgetLimit, emit emitFunc, r
 	return msgs
 }
 
-// needsTruncation reports whether any text part exceeds limit.
-func needsTruncation(parts []Part, limit int) bool {
-	if limit <= 0 {
-		return false
-	}
-	for _, p := range parts {
-		if p.Type == PartText && len(p.Text) > limit {
-			return true
-		}
-	}
-	return false
-}
-
-// truncateParts bounds the model-facing text parts of a tool result. It does
-// not mutate the input; the full result remains available to observers.
+// truncateParts returns a bounded copy of the text parts of a tool result.
 func truncateParts(parts []Part, limit int) ([]Part, bool) {
 	if len(parts) == 0 {
 		return nil, false

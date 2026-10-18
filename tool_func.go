@@ -30,8 +30,8 @@ func WithToolSchema(schema json.RawMessage) ToolOption {
 }
 
 // WithToolMaxOutput overrides the global tool output limit for this tool. The
-// limit affects only the model-facing message; EventToolResult still carries
-// the full result. A value <= 0 inherits WithMaxToolOutput.
+// bounded copy is used for the event and the message history. A value <= 0
+// inherits WithMaxToolOutput.
 func WithToolMaxOutput(n int) ToolOption {
 	return func(s *ToolSpec) { s.MaxOutput = n }
 }

@@ -21,8 +21,7 @@ type ToolSpec struct {
 	InputSchema json.RawMessage `json:"input_schema"`
 	Annotations ToolAnnotations `json:"annotations"`
 
-	// MaxOutput overrides WithMaxToolOutput for this tool when positive. It
-	// bounds only the model-facing copy; ToolResult.Content stays full.
+	// MaxOutput overrides WithMaxToolOutput for this tool when positive.
 	MaxOutput int `json:"-"`
 }
 
@@ -41,8 +40,8 @@ type ToolResult struct {
 	Content []Part
 	IsError bool
 	// Truncated reports that the agent bounded this result for the model. The
-	// Content on the ToolResult carried by EventToolResult / AfterToolBatch is
-	// still the full result; only the model-facing message is shortened.
+	// ToolResult carried by EventToolResult and AfterToolBatch contains that
+	// bounded copy.
 	Truncated bool
 	// Meta carries data for hooks/observers; it is never sent to the model.
 	Meta map[string]any

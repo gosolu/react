@@ -26,7 +26,7 @@ Features a unified ReAct (Reasoning + Acting) loop with support for both streami
   - Opt-in budget limits for model calls, tool calls, request tokens, total tokens, and wall time (`react.WithBudget`), enforced across sub-agents.
   - Per-call model timeout (`react.WithModelTimeout`) and explicit budget/timeout stop reasons.
 - **Bounded Tool Rendering:**
-  - `react.WithMaxToolOutput` / `react.WithToolMaxOutput` bound only the model-facing copy. `EventToolResult` carries the full result with `ToolResult.Truncated` and the call duration.
+  - `react.WithMaxToolOutput` / `react.WithToolMaxOutput` bound tool output. `EventToolResult` carries the bounded result with `ToolResult.Truncated` and the call duration.
   - `Result.RunID`, `Result.Duration`, and `Result.Budget` round out run-level accounting.
 - **Progressive Disclosure Skills:**
   - `SKILL.md` folders with YAML frontmatter.
@@ -339,9 +339,9 @@ the agent appends error tool results instead so the conversation remains valid.
 fmt.Println(res.RunID, res.Duration, res.Budget.Exceeded, res.StopReason)
 ```
 
-Tool output is bounded only in the model-facing message. The full result, the
-`Truncated` flag, and the call duration are delivered on `EventToolResult`, so
-the service can record them without the library duplicating them in `Result`:
+Tool output is bounded before it is emitted or added to the message history.
+`EventToolResult` carries that bounded result with the `Truncated` flag and the
+call duration; the library does not retain an untruncated copy:
 
 ```go
 a.Run(ctx, "session-1", "Do the task", react.WithEventHandler(func(ev react.Event) {

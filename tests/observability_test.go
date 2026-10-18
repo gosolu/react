@@ -12,7 +12,7 @@ import (
 	"github.com/gosolu/react/provider/mock"
 )
 
-func TestTruncationMarkerAndFullEventResult(t *testing.T) {
+func TestTruncationMarkerAndBoundedEventResult(t *testing.T) {
 	long := react.NewTool("long", "returns a long string", func(context.Context, struct{}) (string, error) {
 		return strings.Repeat("x", 100), nil
 	})
@@ -70,11 +70,14 @@ func TestTruncationMarkerAndFullEventResult(t *testing.T) {
 	if toolEvents[0].ToolResult == nil || !toolEvents[0].ToolResult.Truncated {
 		t.Fatal("expected Truncated on the event result")
 	}
-	if got := len(toolEvents[0].ToolResult.Text()); got != 100 {
-		t.Fatalf("full event output length = %d, want 100", got)
+	if got := len(toolEvents[0].ToolResult.Text()); got >= 100 {
+		t.Fatalf("event output length = %d, want the bounded copy", got)
 	}
-	if len(batchText) != 100 || !batchTruncated {
-		t.Fatalf("AfterToolBatch saw len=%d truncated=%v, want the full result with the flag", len(batchText), batchTruncated)
+	if !strings.Contains(toolEvents[0].ToolResult.Text(), "output truncated from 100 bytes") {
+		t.Fatal("expected the truncation marker on the event result")
+	}
+	if len(batchText) >= 100 || !batchTruncated {
+		t.Fatalf("AfterToolBatch saw len=%d truncated=%v, want the bounded result with the flag", len(batchText), batchTruncated)
 	}
 	if toolEvents[0].Duration <= 0 {
 		t.Fatalf("tool duration = %s", toolEvents[0].Duration)
@@ -124,10 +127,13 @@ func TestPerToolOutputLimit(t *testing.T) {
 		t.Fatal("big tool should not be truncated")
 	}
 	if got := len(bigEvent.ToolResult.Text()); got != 100 {
-		t.Fatalf("big full output = %d, want 100", got)
+		t.Fatalf("big output = %d, want 100", got)
 	}
-	if got := len(smallEvent.ToolResult.Text()); got != 100 {
-		t.Fatalf("small full output = %d, want 100", got)
+	if got := len(smallEvent.ToolResult.Text()); got >= 100 {
+		t.Fatalf("small output = %d, want the bounded copy", got)
+	}
+	if !strings.Contains(smallEvent.ToolResult.Text(), "output truncated from 100 bytes") {
+		t.Fatal("expected the truncation marker on the small event result")
 	}
 }
 
