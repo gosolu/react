@@ -1,6 +1,9 @@
 package react
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // EventType identifies an Event.
 type EventType string
@@ -42,6 +45,10 @@ type Event struct {
 	Usage   *Usage   // MessageComplete (per call), RunEnd (aggregate)
 	Result  *Result  // RunEnd
 	Err     error    // Error
+
+	// Duration is set on EventToolResult (one tool call), EventMessageComplete
+	// (one model call), and EventRunEnd (the whole run).
+	Duration time.Duration
 }
 
 // Result summarises a completed run.
@@ -49,8 +56,16 @@ type Result struct {
 	// Output is the final assistant text.
 	Output string
 	// Messages are all messages produced in this run, starting with the user input.
-	Messages   []Message
-	Usage      Usage
+	Messages []Message
+	// Usage is the token usage of this run, including its sub-agents.
+	Usage Usage
+	// Budget is what this run and its sub-agents consumed. For a sub-agent this
+	// is the sub-agent's own share.
+	Budget BudgetUsage
+	// RunID identifies this run; it is also carried by emitted events.
+	RunID string
+	// Duration is the wall-clock time of this run.
+	Duration   time.Duration
 	Turns      int
 	StopReason StopReason
 }

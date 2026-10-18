@@ -556,4 +556,3 @@ func TestHookRewritePolicyReEvaluation(t *testing.T) {
 		}
 	})
 }
-

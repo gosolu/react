@@ -22,6 +22,12 @@ Features a unified ReAct (Reasoning + Acting) loop with support for both streami
   - Generics-based tool definitions (`react.NewTool[In, Out](...)`).
   - Automatic JSON Schema generation via reflection with support for struct tags (`desc`, `enum`, `omitempty`, `required`).
   - Parallel tool execution with semaphore bounds, per-tool timeouts, and panic recovery.
+- **Bounded Runs:**
+  - Opt-in budget limits for model calls, tool calls, request tokens, total tokens, and wall time (`react.WithBudget`), enforced across sub-agents.
+  - Per-call model timeout (`react.WithModelTimeout`) and explicit budget/timeout stop reasons.
+- **Bounded Tool Rendering:**
+  - `react.WithMaxToolOutput` / `react.WithToolMaxOutput` bound only the model-facing copy. `EventToolResult` carries the full result with `ToolResult.Truncated` and the call duration.
+  - `Result.RunID`, `Result.Duration`, and `Result.Budget` round out run-level accounting.
 - **Progressive Disclosure Skills:**
   - `SKILL.md` folders with YAML frontmatter.
   - Only the catalog is advertised up-front; full instructions are lazily loaded on demand via `activate_skill`.
@@ -55,6 +61,7 @@ Features a unified ReAct (Reasoning + Acting) loop with support for both streami
 ```
 react/
 ├── agent.go, loop.go, run.go, subagent.go, options.go, event.go  # Core ReAct loop, events, options, sub-agents
+├── budget.go, validate.go                                        # Run budgets, usage accounting, config validation
 ├── tool.go, tool_*.go                                            # Generic tools, JSON schema, executor, middleware
 ├── skill.go, skill_*.go                                          # SKILL.md parser, registry, activation tools
 ├── hook.go                                                       # RunContext and lifecycle hooks
@@ -289,6 +296,67 @@ agent, _ := react.New(
     }),
 )
 ```
+
+---
+
+## Budgets, Timeouts & Run Results
+
+Bound a run and its sub-agents with `react.WithBudget`. Zero limits are
+unlimited:
+
+```go
+a, err := react.New(
+    react.WithProvider(provider),
+    react.WithBudget(react.BudgetLimits{
+        MaxModelCalls:    12,
+        MaxToolCalls:     40,
+        MaxRequestTokens: 32_000,
+        MaxTotalTokens:   120_000,
+        MaxWallTime:      3 * time.Minute,
+    }),
+    react.WithModelTimeout(45*time.Second),
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+res, err := a.Run(ctx, "session-1", "Do the task")
+if errors.Is(err, react.ErrBudgetExceeded) {
+    // res is the partial result; res.Budget.Exceeded names the hit limit.
+}
+```
+
+Model-call and tool-call counts are reserved before execution, so parallel
+sub-agents cannot exceed them. Token limits are checked before each request and
+after each response. A tool batch that would exceed `MaxToolCalls` is not run;
+the agent appends error tool results instead so the conversation remains valid.
+
+`Result.Usage` and `Result.Budget` include the usage of sub-agents invoked via
+`Agent.AsTool`. `Result` carries `RunID`, `Duration`, `Budget`, and a terminal
+`StopReason`:
+
+```go
+fmt.Println(res.RunID, res.Duration, res.Budget.Exceeded, res.StopReason)
+```
+
+Tool output is bounded only in the model-facing message. The full result, the
+`Truncated` flag, and the call duration are delivered on `EventToolResult`, so
+the service can record them without the library duplicating them in `Result`:
+
+```go
+a.Run(ctx, "session-1", "Do the task", react.WithEventHandler(func(ev react.Event) {
+    if ev.Type == react.EventToolResult {
+        fmt.Println(ev.ToolCall.Name, ev.Duration, ev.ToolResult.Truncated, ev.ToolResult.Text())
+    }
+}))
+```
+
+Override the model-facing limit for one tool with
+`react.WithToolMaxOutput(n)`. Every path that returns a `Result` sets a terminal
+`StopReason` (`StopBudgetExceeded`, `StopTimeout`, `StopCanceled`, `StopError`,
+and the existing model/provider reasons). `Agent.Validate` checks in-memory
+invariants (tool schemas, skills, limits) and `New` calls it before the first
+model call.
 
 ---
 

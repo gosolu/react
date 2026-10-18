@@ -29,6 +29,13 @@ func WithToolSchema(schema json.RawMessage) ToolOption {
 	return func(s *ToolSpec) { s.InputSchema = schema }
 }
 
+// WithToolMaxOutput overrides the global tool output limit for this tool. The
+// limit affects only the model-facing message; EventToolResult still carries
+// the full result. A value <= 0 inherits WithMaxToolOutput.
+func WithToolMaxOutput(n int) ToolOption {
+	return func(s *ToolSpec) { s.MaxOutput = n }
+}
+
 // New builds a tool from a typed Go function. The input schema is derived
 // from In (see SchemaFor). Out is converted to the result as follows:
 // Result is used as-is, string becomes text, []Part becomes content, and

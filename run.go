@@ -10,7 +10,8 @@ import (
 // API and returns the final result. sessionID selects the conversation in the
 // memory store; an empty sessionID runs statelessly (see WithHistory).
 //
-// On ErrMaxTurns the partial Result is returned alongside the error.
+// On ErrMaxTurns, ErrBudgetExceeded, or ErrModelTimeout the partial Result is
+// returned alongside the error.
 func (a *Agent) Run(ctx context.Context, sessionID, input string, opts ...RunOption) (*Result, error) {
 	rcfg := newRunConfig(opts)
 	return a.execute(ctx, sessionID, input, rcfg, false, func(Event) bool { return true })

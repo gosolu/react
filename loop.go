@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gosolu/react/pkg/utf8util"
 )
@@ -34,6 +35,12 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 			return nil, lerr
 		}
 		defer unlock()
+	}
+
+	runStart := time.Now()
+	ctx, rb, budgetCancel := newRunBudget(ctx, a.cfg.budget, runStart)
+	if budgetCancel != nil {
+		defer budgetCancel()
 	}
 
 	rc := &RunContext{AgentName: a.cfg.name, SessionID: sessionID, RunID: newID(), Depth: depth}
@@ -102,7 +109,20 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 	user.Content = append(user.Content, rcfg.parts...)
 	history = append(history, user)
 
-	result = &Result{Messages: []Message{user}}
+	result = &Result{RunID: rc.RunID, Messages: []Message{user}}
+	finalized := false
+	finalize := func() {
+		if result == nil || finalized {
+			return
+		}
+		finalized = true
+		result.RunID = rc.RunID
+		result.Usage = rb.usage()
+		result.Budget = rb.budgetUsage()
+		result.Duration = time.Since(runStart)
+		result.StopReason = terminalStopReason(err, result.StopReason)
+	}
+	defer finalize()
 	pending := []Message{user}
 	// flush persists completed turns. It uses a non-cancellable context so a
 	// finished turn is saved even if the run is cancelled right after.
@@ -145,6 +165,13 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 		result.Turns = turn
 		emit(Event{Type: EventTurnStart})
 
+		if limit := rb.precheck(); limit != "" {
+			result.StopReason = StopBudgetExceeded
+			err = budgetError(limit)
+			emit(Event{Type: EventTurnEnd})
+			break
+		}
+
 		a.hooks.PreCompact(ctx, rc, len(history))
 		msgs, ferr := a.cfg.ctxManager.Fit(ctx, a.system, history, a.cfg.contextBudget)
 		if ferr != nil {
@@ -186,11 +213,47 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 		if err := a.hooks.BeforeModel(ctx, rc, req); err != nil {
 			return result, err
 		}
+		if limit := rb.checkRequestTokens(estimateRequestTokens(req)); limit != "" {
+			result.StopReason = StopBudgetExceeded
+			err = budgetError(limit)
+			emit(Event{Type: EventTurnEnd})
+			break
+		}
+		if limit := rb.reserveModelCall(); limit != "" {
+			result.StopReason = StopBudgetExceeded
+			err = budgetError(limit)
+			emit(Event{Type: EventTurnEnd})
+			break
+		}
 
-		resp, merr := a.callModel(ctx, req, stream, emit)
+		modelStart := time.Now()
+		callCtx := ctx
+		var modelCancel context.CancelFunc
+		if a.cfg.modelTimeout > 0 {
+			callCtx, modelCancel = context.WithTimeout(ctx, a.cfg.modelTimeout)
+		}
+		resp, merr := a.callModel(callCtx, req, stream, emit)
+		if modelCancel != nil {
+			modelCancel()
+		}
+		modelDuration := time.Since(modelStart)
 		if merr != nil {
+			if rb.wallExpired() {
+				result.StopReason = StopBudgetExceeded
+				err = budgetError(BudgetWallTime)
+				emit(Event{Type: EventTurnEnd})
+				break
+			}
+			if errors.Is(merr, context.DeadlineExceeded) && ctx.Err() == nil {
+				result.StopReason = StopTimeout
+				err = fmt.Errorf("agent: model call: %w", ErrModelTimeout)
+				emit(Event{Type: EventTurnEnd})
+				break
+			}
 			return result, fmt.Errorf("agent: model call: %w", merr)
 		}
+		rb.addUsage(resp.Usage)
+		result.Usage.Add(resp.Usage)
 		if err := a.hooks.AfterModel(ctx, rc, resp); err != nil {
 			return result, err
 		}
@@ -208,13 +271,33 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 				msg.ToolCalls[i].Arguments = json.RawMessage("{}")
 			}
 		}
-		result.Usage.Add(resp.Usage)
 		result.StopReason = resp.StopReason
 		history = append(history, msg)
 		pending = append(pending, msg)
 		result.Messages = append(result.Messages, msg)
 		usage := resp.Usage
-		emit(Event{Type: EventMessageComplete, Message: &msg, Usage: &usage})
+		emit(Event{Type: EventMessageComplete, Message: &msg, Usage: &usage, Duration: modelDuration})
+		if t := msg.Text(); t != "" {
+			result.Output = t
+		}
+		if limit := rb.exceeded(); limit != "" {
+			if len(msg.ToolCalls) == 0 {
+				emit(Event{Type: EventTurnEnd})
+				result.StopReason = StopBudgetExceeded
+				err = budgetError(limit)
+				break
+			}
+			toolMsgs := emitBudgetToolResults(msg.ToolCalls, limit, emit, true)
+			pending = append(pending, toolMsgs...)
+			result.Messages = append(result.Messages, toolMsgs...)
+			if ferr := flush(); ferr != nil {
+				return result, ferr
+			}
+			emit(Event{Type: EventTurnEnd})
+			result.StopReason = StopBudgetExceeded
+			err = budgetError(limit)
+			break
+		}
 
 		if len(msg.ToolCalls) == 0 {
 			result.Output = msg.Text()
@@ -240,13 +323,22 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 			emit(Event{Type: EventTurnEnd})
 			break
 		}
-		if t := msg.Text(); t != "" {
-			result.Output = t
-		}
 
 		for i := range msg.ToolCalls {
 			c := msg.ToolCalls[i]
 			emit(Event{Type: EventToolCallReady, ToolCall: &c, ToolIndex: i})
+		}
+		if limit := rb.reserveToolCalls(len(msg.ToolCalls)); limit != "" {
+			toolMsgs := emitBudgetToolResults(msg.ToolCalls, limit, emit, false)
+			pending = append(pending, toolMsgs...)
+			result.Messages = append(result.Messages, toolMsgs...)
+			if ferr := flush(); ferr != nil {
+				return result, ferr
+			}
+			emit(Event{Type: EventTurnEnd})
+			result.StopReason = StopBudgetExceeded
+			err = budgetError(limit)
+			break
 		}
 		toolMsgs := a.runTools(ctx, rc, activeReg, msg.ToolCalls, emit)
 		history = append(history, toolMsgs...)
@@ -256,7 +348,17 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 			return result, err
 		}
 		emit(Event{Type: EventTurnEnd})
+		if limit := rb.precheck(); limit != "" {
+			result.StopReason = StopBudgetExceeded
+			err = budgetError(limit)
+			break
+		}
 		if cerr := ctx.Err(); cerr != nil {
+			if rb.wallExpired() {
+				result.StopReason = StopBudgetExceeded
+				err = budgetError(BudgetWallTime)
+				break
+			}
 			return result, cerr
 		}
 	}
@@ -264,8 +366,9 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 	if ferr := flush(); ferr != nil && err == nil {
 		err = ferr
 	}
+	finalize()
 	usage := result.Usage
-	emit(Event{Type: EventRunEnd, Result: result, Usage: &usage})
+	emit(Event{Type: EventRunEnd, Result: result, Usage: &usage, Duration: time.Since(runStart)})
 	return result, err
 }
 
@@ -300,7 +403,8 @@ func (a *Agent) callModel(ctx context.Context, req *Request, stream bool, emit e
 }
 
 // runTools executes a batch of tool calls and returns tool-result messages in
-// call order.
+// call order. The full result is emitted on EventToolResult; the message holds
+// the model-facing copy and may be truncated.
 func (a *Agent) runTools(ctx context.Context, rc *RunContext, reg *ToolRegistry, calls []ToolCall, emit emitFunc) []Message {
 	mws := a.middleware
 	if a.cfg.toolTimeout > 0 {
@@ -320,28 +424,92 @@ func (a *Agent) runTools(ctx context.Context, rc *RunContext, reg *ToolRegistry,
 		return ok && t.Spec().Annotations.Sequential
 	}
 	ex := ToolExecutor{MaxParallel: a.cfg.maxParallel}
-	results := ex.Run(ctx, calls, isSeq, pipeline, func(i int, cr ToolCallResult) {
-		call, res := cr.Call, cr.Result
-		emit(Event{Type: EventToolResult, ToolCall: &call, ToolIndex: i, ToolResult: &res})
+	results := ex.Run(ctx, calls, isSeq, pipeline, func(i int, cr *ToolCallResult) {
+		limit := a.toolOutputLimit(reg, cr.Call.Name)
+		full := cr.Result
+		full.Truncated = needsTruncation(full.Content, limit)
+		call := cr.Call
+		emit(Event{Type: EventToolResult, ToolCall: &call, ToolIndex: i, ToolResult: &full, Duration: cr.Duration})
+		cr.Result.Truncated = full.Truncated
 	})
 
+	// AfterToolBatch observes the full result plus the Truncated flag.
+	_ = a.hooks.AfterToolBatch(ctx, rc, results)
+
 	msgs := make([]Message, len(results))
-	for i, cr := range results {
-		content := make([]Part, len(cr.Result.Content))
-		for j, p := range cr.Result.Content {
-			if a.cfg.maxToolOutput > 0 && p.Type == PartText && len(p.Text) > a.cfg.maxToolOutput {
-				origLen := len(p.Text)
-				p.Text = fmt.Sprintf("%s\n...[output truncated from %d bytes]", utf8util.TruncateString(p.Text, a.cfg.maxToolOutput), origLen)
-			}
-			content[j] = p
-		}
+	for i := range results {
+		content, truncated := truncateParts(results[i].Result.Content, a.toolOutputLimit(reg, results[i].Call.Name))
 		if len(content) == 0 {
 			content = []Part{TextPart("(no output)")}
 		}
-		msgs[i] = ToolResultMessage(cr.Call.ID, cr.Call.Name, content, cr.Result.IsError)
+		results[i].Result.Content = content
+		results[i].Result.Truncated = truncated
+		msgs[i] = ToolResultMessage(results[i].Call.ID, results[i].Call.Name, content, results[i].Result.IsError)
 	}
-	_ = a.hooks.AfterToolBatch(ctx, rc, results)
 	return msgs
+}
+
+// toolOutputLimit resolves the model-facing output limit for one tool.
+func (a *Agent) toolOutputLimit(reg *ToolRegistry, name string) int {
+	limit := a.cfg.maxToolOutput
+	if t, ok := reg.Get(name); ok {
+		if n := t.Spec().MaxOutput; n > 0 {
+			limit = n
+		}
+	}
+	return limit
+}
+
+// emitBudgetToolResults builds and emits error tool results for calls that
+// were not executed because the tool-call budget was exhausted. Every call gets
+// a result so the assistant tool-use block stays valid.
+func emitBudgetToolResults(calls []ToolCall, limit BudgetLimit, emit emitFunc, ready bool) []Message {
+	text := fmt.Sprintf("Error: tool budget exceeded (%s)", limit)
+	msgs := make([]Message, len(calls))
+	for i, call := range calls {
+		if ready {
+			emit(Event{Type: EventToolCallReady, ToolCall: &call, ToolIndex: i})
+		}
+		res := ErrorResult(text)
+		msgs[i] = ToolResultMessage(call.ID, call.Name, res.Content, true)
+		emit(Event{Type: EventToolResult, ToolCall: &call, ToolIndex: i, ToolResult: &res})
+	}
+	return msgs
+}
+
+// needsTruncation reports whether any text part exceeds limit.
+func needsTruncation(parts []Part, limit int) bool {
+	if limit <= 0 {
+		return false
+	}
+	for _, p := range parts {
+		if p.Type == PartText && len(p.Text) > limit {
+			return true
+		}
+	}
+	return false
+}
+
+// truncateParts bounds the model-facing text parts of a tool result. It does
+// not mutate the input; the full result remains available to observers.
+func truncateParts(parts []Part, limit int) ([]Part, bool) {
+	if len(parts) == 0 {
+		return nil, false
+	}
+	if limit <= 0 {
+		return parts, false
+	}
+	out := make([]Part, len(parts))
+	truncated := false
+	for i, p := range parts {
+		if p.Type == PartText && len(p.Text) > limit {
+			origLen := len(p.Text)
+			p.Text = fmt.Sprintf("%s\n...[output truncated from %d bytes]", utf8util.TruncateString(p.Text, limit), origLen)
+			truncated = true
+		}
+		out[i] = p
+	}
+	return out, truncated
 }
 
 func (a *Agent) checkPolicy(ctx context.Context, spec ToolSpec, call ToolCall) PolicyDecision {
@@ -483,6 +651,29 @@ func (a *Agent) askApproval(ctx context.Context, spec ToolSpec, call ToolCall, e
 	req := ApprovalRequest{AgentName: a.cfg.name, Spec: spec, Call: call}
 	emit(Event{Type: EventApprovalRequested, ToolCall: &call, Approval: &req})
 	return a.cfg.approver.Approve(ctx, req)
+}
+
+// terminalStopReason maps a run error to a stop reason. Explicit terminal
+// reasons set by the loop are preserved when there is no error.
+func terminalStopReason(err error, current StopReason) StopReason {
+	if err == nil {
+		if current == "" {
+			return StopEnd
+		}
+		return current
+	}
+	switch {
+	case errors.Is(err, ErrBudgetExceeded):
+		return StopBudgetExceeded
+	case errors.Is(err, ErrModelTimeout):
+		return StopTimeout
+	case errors.Is(err, ErrMaxTurns):
+		return StopMaxTurns
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return StopCanceled
+	default:
+		return StopError
+	}
 }
 
 func newID() string {

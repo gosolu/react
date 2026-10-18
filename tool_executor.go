@@ -31,8 +31,9 @@ type ToolExecutor struct {
 // Sequential (per isSequential) runs alone after preceding calls finish.
 // ToolHandler errors, panics and timeouts are converted into error Results so the
 // model can react to them. onDone (optional) is invoked once per call as it
-// completes; calls to onDone are serialized.
-func (e ToolExecutor) Run(ctx context.Context, calls []ToolCall, isSequential func(name string) bool, h ToolHandler, onDone func(i int, cr ToolCallResult)) []ToolCallResult {
+// completes and receives a pointer to the stored result, so it may mutate it;
+// calls to onDone are serialized.
+func (e ToolExecutor) Run(ctx context.Context, calls []ToolCall, isSequential func(name string) bool, h ToolHandler, onDone func(i int, cr *ToolCallResult)) []ToolCallResult {
 	results := make([]ToolCallResult, len(calls))
 	maxPar := e.MaxParallel
 	if maxPar <= 0 {
@@ -42,11 +43,10 @@ func (e ToolExecutor) Run(ctx context.Context, calls []ToolCall, isSequential fu
 	var doneMu sync.Mutex
 
 	runOne := func(i int) {
-		cr := e.exec(ctx, calls[i], h)
-		results[i] = cr
+		results[i] = e.exec(ctx, calls[i], h)
 		if onDone != nil {
 			doneMu.Lock()
-			onDone(i, cr)
+			onDone(i, &results[i])
 			doneMu.Unlock()
 		}
 	}

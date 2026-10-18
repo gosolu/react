@@ -123,7 +123,7 @@ func TestExecutorParallelOrderAndErrors(t *testing.T) {
 	ex := ToolExecutor{MaxParallel: 4, Timeout: 200 * time.Millisecond}
 	var done atomic.Int32
 	start := time.Now()
-	res := ex.Run(context.Background(), calls, func(n string) bool { return n == "seq" }, h, func(int, ToolCallResult) { done.Add(1) })
+	res := ex.Run(context.Background(), calls, func(n string) bool { return n == "seq" }, h, func(int, *ToolCallResult) { done.Add(1) })
 	if time.Since(start) > 600*time.Millisecond {
 		t.Fatalf("too slow: %v", time.Since(start))
 	}
@@ -144,5 +144,32 @@ func TestExecutorParallelOrderAndErrors(t *testing.T) {
 	}
 	if !res[5].Result.IsError || !strings.Contains(res[5].Result.Text(), "timed out") {
 		t.Fatalf("timeout: %v", res[5].Result.Text())
+	}
+}
+
+func TestToolExecutorOnDoneMutatesStoredResult(t *testing.T) {
+	h := func(context.Context, ToolCall) (ToolResult, error) {
+		return TextResult("original"), nil
+	}
+	var calls int
+	res := (ToolExecutor{}).Run(
+		context.Background(),
+		[]ToolCall{{ID: "1", Name: "x"}},
+		nil,
+		h,
+		func(_ int, cr *ToolCallResult) {
+			calls++
+			cr.Result.Content = []Part{TextPart("changed")}
+			cr.Result.Truncated = true
+		},
+	)
+	if calls != 1 {
+		t.Fatalf("onDone calls = %d, want 1", calls)
+	}
+	if got := res[0].Result.Text(); got != "changed" {
+		t.Fatalf("stored result = %q, want changed", got)
+	}
+	if !res[0].Result.Truncated {
+		t.Fatal("stored Truncated flag was not mutated")
 	}
 }

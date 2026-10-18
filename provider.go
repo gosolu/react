@@ -15,6 +15,12 @@ const (
 	StopContentFilter StopReason = "content_filter" // Content filter omitted or blocked generation
 	StopMaxTurns      StopReason = "max_turns"      // Agent stopped because max turn limit was reached
 	StopOther         StopReason = "other"          // Other provider-specific reason
+
+	// Agent-level termination reasons.
+	StopBudgetExceeded StopReason = "budget_exceeded" // A BudgetLimits limit was hit
+	StopTimeout        StopReason = "timeout"         // A per-call model timeout expired
+	StopCanceled       StopReason = "canceled"        // The caller's context was canceled or expired
+	StopError          StopReason = "error"           // The run failed for another reason
 )
 
 // Tool choice values for Request.ToolChoice. Any other value is treated as

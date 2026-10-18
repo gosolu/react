@@ -115,6 +115,10 @@ func New(opts ...Option) (*Agent, error) {
 		parts = append(parts, cat)
 	}
 	a.system = strings.Join(parts, "\n\n")
+	if err := a.Validate(); err != nil {
+		_ = a.Close()
+		return nil, err
+	}
 	return a, nil
 }
 

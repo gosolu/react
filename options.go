@@ -26,6 +26,8 @@ type config struct {
 	maxTurns          int
 	maxParallel       int
 	toolTimeout       time.Duration
+	modelTimeout      time.Duration
+	budget            BudgetLimits
 	maxTokens         int
 	temperature       *float64
 	maxDepth          int
@@ -121,6 +123,13 @@ func WithMaxParallelTools(n int) Option { return func(c *config) { c.maxParallel
 // WithToolTimeout bounds each tool call (default 2m; 0 disables).
 func WithToolTimeout(d time.Duration) Option { return func(c *config) { c.toolTimeout = d } }
 
+// WithModelTimeout bounds each model call (0 disables). A timed-out call
+// returns ErrModelTimeout and sets Result.StopReason to StopTimeout.
+func WithModelTimeout(d time.Duration) Option { return func(c *config) { c.modelTimeout = d } }
+
+// WithBudget bounds a run and its sub-agents. Zero fields are unlimited.
+func WithBudget(l BudgetLimits) Option { return func(c *config) { c.budget = l } }
+
 // WithMaxTokens sets the per-response output token limit.
 func WithMaxTokens(n int) Option { return func(c *config) { c.maxTokens = n } }
 
@@ -130,7 +139,8 @@ func WithTemperature(t float64) Option { return func(c *config) { c.temperature 
 // WithMaxDepth bounds sub-agent nesting (default 3).
 func WithMaxDepth(n int) Option { return func(c *config) { c.maxDepth = n } }
 
-// WithMaxToolOutput bounds the maximum character/byte length of tool results (default 64KB, 0 disables).
+// WithMaxToolOutput bounds the model-facing text of tool results (default 64KB,
+// 0 disables). EventToolResult still carries the full result.
 func WithMaxToolOutput(bytes int) Option { return func(c *config) { c.maxToolOutput = bytes } }
 
 // WithPersistCompaction enables saving compacted history back to Store when Fit shrinks the history.
