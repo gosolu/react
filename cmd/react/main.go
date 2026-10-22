@@ -18,7 +18,6 @@ import (
 	"github.com/gosolu/react/provider/mock"
 	"github.com/gosolu/react/provider/openai"
 	"github.com/gosolu/react/provider/opencode"
-	"github.com/gosolu/react/tools/builtin"
 )
 
 func main() {
@@ -30,7 +29,7 @@ func main() {
 	skillsDirFlag := flag.String("skills", "", "Path to skills directory")
 	sessionFlag := flag.String("session", "default-repl", "Session ID")
 	storeDirFlag := flag.String("store-dir", "", "Directory to persist conversation sessions across CLI restarts")
-	systemPromptFlag := flag.String("system", "You are a helpful and capable agent assistant equipped with system tools.", "Base system prompt")
+	systemPromptFlag := flag.String("system", "You are a helpful and capable agent assistant.", "Base system prompt")
 	flag.Parse()
 
 	var p react.Provider
@@ -135,7 +134,6 @@ func main() {
 		react.WithProvider(p),
 		react.WithModel(model),
 		react.WithSystemPrompt(*systemPromptFlag),
-		react.WithTools(builtin.All()...),
 		react.WithPermission(react.DefaultPermissionPolicy(), remember),
 	}
 

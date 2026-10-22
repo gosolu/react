@@ -69,7 +69,6 @@ react/
 ├── contextmgr.go, contextmgr_summarize.go                        # Context window sliding window & summarization
 ├── permission.go                                                 # Permission policies and approver interfaces
 ├── plugin.go                                                     # Plugin interface & Registrar
-├── tools/builtin/                                                # Standard tools: read_file, write_file, list_dir, shell
 ├── cmd/react/                                                    # Interactive CLI REPL application
 ├── examples/
 │   ├── basic/                                                    # Minimal non-streaming example
@@ -111,25 +110,32 @@ import (
 
 	"github.com/gosolu/react"
 	"github.com/gosolu/react/provider/openai"
-	"github.com/gosolu/react/tools/builtin"
 )
+
+type WeatherInput struct {
+	City string `json:"city" desc:"The city name to check weather for"`
+}
 
 func main() {
 	provider := openai.New(openai.Config{
 		APIKey: os.Getenv("OPENAI_API_KEY"),
 	})
 
+	weatherTool := react.NewTool("get_weather", "Get current weather for a city", func(ctx context.Context, in WeatherInput) (string, error) {
+		return fmt.Sprintf("The weather in %s is sunny, 22°C", in.City), nil
+	}, react.ReadOnly())
+
 	a, err := react.New(
 		react.WithProvider(provider),
 		react.WithModel("gpt-4o"),
-		react.WithTools(builtin.ReadFile(), builtin.ListDir()),
+		react.WithTools(weatherTool),
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	ctx := context.Background()
-	for ev, err := range a.Stream(ctx, "session-1", "List files in the current directory") {
+	for ev, err := range a.Stream(ctx, "session-1", "What is the weather in Tokyo?") {
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -360,7 +366,7 @@ model call.
 
 ---
 
-## Persistent Storage & Confinement
+## Persistent Storage
 
 ### File-Based Session Storage
 
@@ -374,18 +380,6 @@ agent, err := react.New(
 )
 ```
 
-### Confined Filesystem & Surgical Edits
-
-Restrict filesystem access to a target directory and perform exact surgical replacements:
-
-```go
-// Confine tools to a sandbox workspace
-tools := builtin.NewFilesystem("/path/to/workspace")
-
-// Or add surgical string replace tool
-editTool := builtin.EditFile(builtin.WithBaseDir("/path/to/workspace"))
-```
-
 ---
 
 ## Sub-Agents (Agent-as-a-Tool)
@@ -396,7 +390,7 @@ Delegate complex tasks to specialized child agents:
 researcher, _ := react.New(
     react.WithName("researcher"),
     react.WithProvider(provider),
-    react.WithTools(builtin.ReadFile(), builtin.ListDir()),
+    react.WithTools(researchTool),
 )
 
 mainAgent, _ := react.New(
