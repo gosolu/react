@@ -173,3 +173,97 @@ func TestToolExecutorOnDoneMutatesStoredResult(t *testing.T) {
 		t.Fatal("stored Truncated flag was not mutated")
 	}
 }
+
+type embedA struct {
+	*embedB
+	FieldA string `json:"field_a"`
+}
+
+type embedB struct {
+	*embedA
+	FieldB int `json:"field_b"`
+}
+
+func TestSchemaMutuallyRecursiveEmbeddedStructs(t *testing.T) {
+	raw := SchemaFor[embedA]()
+	var s map[string]any
+	if err := json.Unmarshal(raw, &s); err != nil {
+		t.Fatalf("invalid schema JSON: %v", err)
+	}
+	props, ok := s["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing properties: %v", s)
+	}
+	if props["field_a"] == nil || props["field_b"] == nil {
+		t.Fatalf("expected both field_a and field_b in flattened schema, got: %v", props)
+	}
+}
+
+func TestExecutorSemaphoreCancellationAndUncooperativeTool(t *testing.T) {
+	t.Run("cancelled context aborts waiting semaphore callers", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		var executed atomic.Int32
+		started := make(chan struct{})
+		release := make(chan struct{})
+		defer close(release)
+
+		h := func(ctx context.Context, c ToolCall) (ToolResult, error) {
+			n := executed.Add(1)
+			if n == 1 {
+				close(started)
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return ToolResult{}, ctx.Err()
+				}
+			}
+			return TextResult("ok"), nil
+		}
+
+		go func() {
+			<-started
+			// Cancel while call 1 holds the only semaphore slot and calls 2..4 are waiting.
+			time.Sleep(15 * time.Millisecond)
+			cancel()
+		}()
+
+		calls := []ToolCall{
+			{ID: "1", Name: "t"},
+			{ID: "2", Name: "t"},
+			{ID: "3", Name: "t"},
+			{ID: "4", Name: "t"},
+		}
+		ex := ToolExecutor{MaxParallel: 1}
+		res := ex.Run(ctx, calls, nil, h, nil)
+		if got := executed.Load(); got != 1 {
+			t.Fatalf("expected only 1 tool call to execute before cancellation, got %d", got)
+		}
+		for i, r := range res {
+			if !r.Result.IsError || r.Err == nil {
+				t.Fatalf("call %d expected canceled error result, got %+v", i, r)
+			}
+		}
+	})
+
+	t.Run("uncooperative tool does not deadlock executor", func(t *testing.T) {
+		blockForever := make(chan struct{})
+		defer close(blockForever)
+
+		h := func(_ context.Context, c ToolCall) (ToolResult, error) {
+			<-blockForever // completely ignores ctx.Done()
+			return TextResult("unreachable"), nil
+		}
+
+		ex := ToolExecutor{MaxParallel: 1, Timeout: 30 * time.Millisecond}
+		start := time.Now()
+		res := ex.Run(context.Background(), []ToolCall{{ID: "1", Name: "hung"}}, nil, h, nil)
+		if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+			t.Fatalf("executor blocked too long on uncooperative tool: %v", elapsed)
+		}
+		if !res[0].Result.IsError || !strings.Contains(res[0].Result.Text(), "timed out") {
+			t.Fatalf("expected timeout error result, got: %+v", res[0])
+		}
+	})
+}

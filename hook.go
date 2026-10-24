@@ -40,6 +40,16 @@ func (rc *RunContext) Get(key string) (any, bool) {
 	return v, ok
 }
 
+// Update atomically reads and updates run-scoped state under the context lock.
+func (rc *RunContext) Update(key string, fn func(old any) any) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	if rc.values == nil {
+		rc.values = map[string]any{}
+	}
+	rc.values[key] = fn(rc.values[key])
+}
+
 // AddContext queues additional context (e.g. system instructions, reminders, environment state)
 // that will be injected into the next model request.
 func (rc *RunContext) AddContext(text string) {

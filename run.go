@@ -2,7 +2,9 @@ package react
 
 import (
 	"context"
+	"fmt"
 	"iter"
+	"runtime/debug"
 	"sync"
 )
 
@@ -37,10 +39,18 @@ func (a *Agent) Stream(ctx context.Context, sessionID, input string, opts ...Run
 		go func() {
 			defer wg.Done()
 			defer close(ch)
+			defer func() {
+				if r := recover(); r != nil {
+					runErr = fmt.Errorf("agent: stream panic recovered: %v\n%s", r, debug.Stack())
+				}
+			}()
 			_, runErr = a.execute(ctx, sessionID, input, rcfg, true, func(ev Event) bool {
+				if ctx.Err() != nil {
+					return false
+				}
 				select {
 				case ch <- ev:
-					return true
+					return ctx.Err() == nil
 				case <-ctx.Done():
 					return false
 				}

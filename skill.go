@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"maps"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -96,8 +97,9 @@ func ValidateSkillName(name string) error {
 // Skill is a discovered skill. Its body is read lazily.
 type Skill struct {
 	Frontmatter
-	fsys fs.FS
-	dir  string // directory within fsys ("." for root)
+	fsys    fs.FS
+	dir     string // directory within fsys ("." for root)
+	rootDir string // host OS directory when loaded from SkillDir
 }
 
 // New constructs a skill rooted at dir within fsys, parsing its SKILL.md.
@@ -181,13 +183,41 @@ func (s *Skill) Files() ([]string, error) {
 }
 
 // ReadFile reads a resource relative to the skill directory. Paths that
-// escape the skill directory are rejected.
+// escape the skill directory (including via symlinks) are rejected.
 func (s *Skill) ReadFile(rel string) ([]byte, error) {
 	clean := path.Clean(strings.TrimPrefix(rel, "/"))
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || !fs.ValidPath(clean) {
 		return nil, fmt.Errorf("invalid path %q", rel)
 	}
+	if err := s.checkSymlink(clean); err != nil {
+		return nil, err
+	}
 	return fs.ReadFile(s.fsys, path.Join(s.dir, clean))
+}
+
+func (s *Skill) checkSymlink(clean string) error {
+	var base string
+	if s.rootDir != "" {
+		base = filepath.Join(s.rootDir, filepath.FromSlash(s.dir))
+	} else if s.dir != "" && s.dir != "." {
+		base = filepath.FromSlash(s.dir)
+	}
+	if base == "" {
+		return nil
+	}
+	resolvedBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return nil
+	}
+	resolvedTarget, err := filepath.EvalSymlinks(filepath.Join(base, filepath.FromSlash(clean)))
+	if err != nil {
+		return nil
+	}
+	prefix := filepath.Clean(resolvedBase) + string(filepath.Separator)
+	if resolvedTarget != filepath.Clean(resolvedBase) && !strings.HasPrefix(resolvedTarget, prefix) {
+		return fmt.Errorf("skill: path %q traverses symlink outside root", clean)
+	}
+	return nil
 }
 
 // Location returns a human-readable location for diagnostics.
@@ -693,24 +723,24 @@ func AddSkillAllowedTools(rc *RunContext, tools ...string) {
 	if rc == nil || len(tools) == 0 {
 		return
 	}
-	var existing []string
-	if v, ok := rc.Get(SkillAllowedToolsKey); ok {
-		if list, ok := v.([]string); ok {
+	rc.Update(SkillAllowedToolsKey, func(old any) any {
+		var existing []string
+		if list, ok := old.([]string); ok {
 			existing = append([]string(nil), list...)
 		}
-	}
-	seen := make(map[string]bool, len(existing)+len(tools))
-	for _, t := range existing {
-		seen[t] = true
-	}
-	for _, t := range tools {
-		t = strings.TrimSpace(t)
-		if t != "" && !seen[t] {
+		seen := make(map[string]bool, len(existing)+len(tools))
+		for _, t := range existing {
 			seen[t] = true
-			existing = append(existing, t)
 		}
-	}
-	rc.Set(SkillAllowedToolsKey, existing)
+		for _, t := range tools {
+			t = strings.TrimSpace(t)
+			if t != "" && !seen[t] {
+				seen[t] = true
+				existing = append(existing, t)
+			}
+		}
+		return existing
+	})
 }
 
 // ActiveSkillAllowedTools returns the tool patterns pre-approved by currently active skills.

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/gosolu/react"
@@ -109,10 +110,19 @@ func main() {
 	}
 
 	reader := bufio.NewReader(os.Stdin)
+	sessionID := *sessionFlag
 
 	// Interactive CLI approval for destructive tools with session memory
-	var remember *react.SessionRememberApprover
+	var (
+		remember   *react.SessionRememberApprover
+		approvalMu sync.Mutex
+	)
 	baseApprover := react.PermissionApproverFunc(func(ctx context.Context, req react.ApprovalRequest) (bool, error) {
+		approvalMu.Lock()
+		defer approvalMu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		fmt.Printf("\n⚠️  [APPROVAL NEEDED] Tool: %s\nArguments: %s\nApprove execution? [y/N/a (always for session)]: ", req.Call.Name, string(req.Call.Arguments))
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -121,7 +131,7 @@ func main() {
 		line = strings.TrimSpace(strings.ToLower(line))
 		if line == "a" || line == "always" {
 			if remember != nil {
-				remember.Remember(req.Call.Name)
+				remember.RememberForSession(sessionID, req.Call.Name)
 			}
 			return true, nil
 		}
@@ -164,8 +174,6 @@ func main() {
 	fmt.Printf(" ReAct Agent REPL (Provider: %s, Model: %s, Stream: %v)\n", p.Name(), model, *streamFlag)
 	fmt.Println(" Commands: /tools, /skills, /reset, /exit")
 	fmt.Println("==================================================")
-
-	sessionID := *sessionFlag
 
 	for ctx.Err() == nil {
 		fmt.Printf("\n(%s) > ", sessionID)

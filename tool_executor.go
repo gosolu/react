@@ -51,15 +51,41 @@ func (e ToolExecutor) Run(ctx context.Context, calls []ToolCall, isSequential fu
 		}
 	}
 
+	cancelOne := func(i int, err error) {
+		results[i] = ToolCallResult{
+			Call:   calls[i],
+			Result: ErrorResult("Error: tool execution canceled: " + err.Error()),
+			Err:    err,
+		}
+		if onDone != nil {
+			doneMu.Lock()
+			onDone(i, &results[i])
+			doneMu.Unlock()
+		}
+	}
+
 	var wg sync.WaitGroup
 	for i, c := range calls {
+		if err := ctx.Err(); err != nil {
+			cancelOne(i, err)
+			continue
+		}
 		if isSequential != nil && isSequential(c.Name) {
 			wg.Wait()
+			if err := ctx.Err(); err != nil {
+				cancelOne(i, err)
+				continue
+			}
 			runOne(i)
 			continue
 		}
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			cancelOne(i, ctx.Err())
+			continue
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
@@ -85,7 +111,42 @@ func (e ToolExecutor) exec(ctx context.Context, call ToolCall, h ToolHandler) (c
 		ctx, cancel = context.WithTimeout(ctx, e.Timeout)
 		defer cancel()
 	}
-	res, err := h(ctx, call)
+
+	type outcome struct {
+		res   ToolResult
+		err   error
+		panic any
+		stack []byte
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		var o outcome
+		defer func() {
+			if r := recover(); r != nil {
+				o.panic = r
+				o.stack = debug.Stack()
+			}
+			done <- o
+		}()
+		o.res, o.err = h(ctx, call)
+	}()
+
+	var (
+		res ToolResult
+		err error
+	)
+	select {
+	case o := <-done:
+		if o.panic != nil {
+			cr.Err = fmt.Errorf("tool %q panicked: %v\n%s", call.Name, o.panic, o.stack)
+			cr.Result = ErrorResult(fmt.Sprintf("Error: tool %q panicked: %v", call.Name, o.panic))
+			return cr
+		}
+		res, err = o.res, o.err
+	case <-ctx.Done():
+		err = ctx.Err()
+	}
+
 	if err != nil {
 		cr.Err = err
 		msg := err.Error()

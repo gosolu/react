@@ -1,12 +1,13 @@
 package react
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -67,7 +68,11 @@ func SkillDir(dir string) SkillSource {
 		if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
-		return SkillFS(os.DirFS(dir), ".").Skills()
+		skills, err := SkillFS(os.DirFS(dir), ".").Skills()
+		for _, s := range skills {
+			s.rootDir = dir
+		}
+		return skills, err
 	})
 }
 
@@ -142,7 +147,7 @@ func (r *SkillRegistry) List() []*Skill {
 	for _, s := range r.skills {
 		out = append(out, s)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	slices.SortFunc(out, func(a, b *Skill) int { return cmp.Compare(a.Name, b.Name) })
 	return out
 }
 

@@ -294,6 +294,12 @@ func TestValidateRejectsBadConfig(t *testing.T) {
 	if _, err := react.New(react.WithProvider(p), react.WithMaxTurns(0)); err == nil {
 		t.Fatal("expected a max-turns validation error")
 	}
+	contradictoryTool := react.NewTool("contradictory", "both destructive and readonly", func(context.Context, struct{}) (string, error) {
+		return "ok", nil
+	}, react.Destructive(), react.ReadOnly())
+	if _, err := react.New(react.WithProvider(p), react.WithTools(contradictoryTool)); err == nil {
+		t.Fatal("expected a validation error for tool marked both Destructive and ReadOnly")
+	}
 
 	a, err := react.New(react.WithProvider(p))
 	if err != nil {
@@ -333,5 +339,154 @@ func TestBudgetUsageAccounting(t *testing.T) {
 	}
 	if res.Budget.Exceeded != "" {
 		t.Fatalf("exceeded = %q", res.Budget.Exceeded)
+	}
+}
+
+func TestSubagentBudgetExceededDoesNotPoisonParent(t *testing.T) {
+	// Child sub-agent has a tight limit of 1 model call, but tries to make 2 calls.
+	childProvider := mock.New(
+		mock.ToolCalls("child step 1", mock.Call("noop", `{}`)),
+		mock.Text("child step 2"),
+	)
+	child, err := react.New(
+		react.WithProvider(childProvider),
+		react.WithName("child"),
+		react.WithTools(noopTool("noop")),
+		react.WithBudget(react.BudgetLimits{MaxModelCalls: 1}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Parent has plenty of budget (MaxModelCalls: 10) and should continue after child hits its local limit.
+	parentProvider := mock.New(
+		mock.ToolCalls("delegating to child", mock.Call("delegate", map[string]string{"task": "explore"})),
+		mock.Text("parent completed despite child budget limit"),
+	)
+	parent, err := react.New(
+		react.WithProvider(parentProvider),
+		react.WithName("parent"),
+		react.WithTools(child.AsTool("delegate", "delegate task")),
+		react.WithBudget(react.BudgetLimits{MaxModelCalls: 10}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := parent.Run(context.Background(), "", "start")
+	if err != nil {
+		t.Fatalf("expected parent to succeed after child hit local budget, got err: %v", err)
+	}
+	if res.StopReason != react.StopEnd {
+		t.Fatalf("expected StopEnd, got %q", res.StopReason)
+	}
+	if res.Budget.Exceeded != "" {
+		t.Fatalf("expected parent Budget.Exceeded to be empty, got %q", res.Budget.Exceeded)
+	}
+	if res.Output != "parent completed despite child budget limit" {
+		t.Fatalf("unexpected output: %q", res.Output)
+	}
+	// Parent made 2 model calls + child made 1 model call = 3 total
+	if res.Budget.ModelCalls != 3 {
+		t.Fatalf("expected 3 total model calls across tree, got %d", res.Budget.ModelCalls)
+	}
+}
+
+func TestConcurrentSubagentsBudgetIsolation(t *testing.T) {
+	// Subagent A has MaxModelCalls: 2 and makes 2 model calls.
+	pA := mock.New(
+		mock.ToolCalls("A1", mock.Call("noop", `{}`)),
+		mock.Text("A2 done"),
+	)
+	subA, err := react.New(
+		react.WithProvider(pA),
+		react.WithName("subA"),
+		react.WithTools(noopTool("noop")),
+		react.WithBudget(react.BudgetLimits{MaxModelCalls: 2}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Subagent B has MaxModelCalls: 3 and makes 3 model calls.
+	pB := mock.New(
+		mock.ToolCalls("B1", mock.Call("noop", `{}`)),
+		mock.ToolCalls("B2", mock.Call("noop", `{}`)),
+		mock.Text("B3 done"),
+	)
+	subB, err := react.New(
+		react.WithProvider(pB),
+		react.WithName("subB"),
+		react.WithTools(noopTool("noop")),
+		react.WithBudget(react.BudgetLimits{MaxModelCalls: 3}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Parent invokes subA and subB concurrently in a single turn.
+	parentProvider := mock.New(
+		mock.ToolCalls("parallel delegation",
+			mock.Call("call_a", map[string]string{"task": "work A"}),
+			mock.Call("call_b", map[string]string{"task": "work B"}),
+		),
+		mock.Text("both subagents finished"),
+	)
+	parent, err := react.New(
+		react.WithProvider(parentProvider),
+		react.WithName("parent"),
+		react.WithMaxParallelTools(4),
+		react.WithTools(
+			subA.AsTool("call_a", "run subA"),
+			subB.AsTool("call_b", "run subB"),
+		),
+		react.WithBudget(react.BudgetLimits{MaxModelCalls: 10}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := parent.Run(context.Background(), "", "go")
+	if err != nil {
+		t.Fatalf("parallel subagents failed: %v", err)
+	}
+	for _, m := range res.Messages {
+		if m.Role == react.RoleTool && m.IsError {
+			t.Fatalf("subagent tool unexpectedly failed: %s", m.Text())
+		}
+	}
+	// Total model calls = 2 (parent) + 2 (subA) + 3 (subB) = 7
+	if res.Budget.ModelCalls != 7 {
+		t.Fatalf("expected 7 total model calls, got %d", res.Budget.ModelCalls)
+	}
+}
+
+func TestContextSummarizerCountsAgainstBudget(t *testing.T) {
+	sumProvider := mock.New(mock.Text("short summary"))
+	summarizer := &react.ContextSummarizer{
+		Provider: sumProvider,
+	}
+	mainProvider := mock.New(mock.Text("final response"))
+
+	// Budget allows only 1 model call; summarization + main call requires 2 model calls.
+	a, err := react.New(
+		react.WithProvider(mainProvider),
+		react.WithContextManager(summarizer, 20),
+		react.WithBudget(react.BudgetLimits{MaxModelCalls: 1}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	history := []react.Message{
+		react.UserText(strings.Repeat("earlier message content ", 20)),
+		react.AssistantText(strings.Repeat("earlier assistant reply ", 20)),
+	}
+	res, err := a.Run(context.Background(), "", "new question", react.WithHistory(history))
+	if !errors.Is(err, react.ErrBudgetExceeded) {
+		t.Fatalf("expected ErrBudgetExceeded when summarizer + main model call exceed MaxModelCalls=1, got %v", err)
+	}
+	if res == nil || res.StopReason != react.StopBudgetExceeded {
+		t.Fatalf("expected StopBudgetExceeded, got %+v", res)
 	}
 }

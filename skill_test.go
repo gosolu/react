@@ -3,8 +3,12 @@ package react
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 )
@@ -241,7 +245,7 @@ func TestAllowedToolsPermissionPreApproval(t *testing.T) {
 		"skills/git-helper/SKILL.md": {Data: []byte(`---
 name: git-helper
 description: Assists with git workflows.
-allowed-tools: Bash(git:*) DangerousTool
+allowed-tools: GitTool(git:*) SafeHelper DangerousTool
 ---
 # Git Helper
 Use git safely.
@@ -261,33 +265,41 @@ Use git safely.
 		t.Fatalf("skill validation failed: %v", err)
 	}
 
-	// Create a destructive tool specification
+	// Non-destructive tools gated by StrictPermissionPolicy
+	safeHelperSpec := ToolSpec{
+		Name:        "SafeHelper",
+		Description: "A non-destructive helper tool",
+	}
+	gitToolSpec := ToolSpec{
+		Name:        "GitTool",
+		Description: "Run non-destructive git subcommands",
+	}
+	// Destructive tool specification
 	dangerousSpec := ToolSpec{
 		Name:        "DangerousTool",
 		Description: "A destructive tool",
 		Annotations: ToolAnnotations{Destructive: true},
 	}
-	bashSpec := ToolSpec{
-		Name:        "Bash",
-		Description: "Run bash command",
-		Annotations: ToolAnnotations{Destructive: true},
-	}
 
-	policy := DefaultPermissionPolicy()
+	policy := StrictPermissionPolicy()
 	rc := &RunContext{}
 	ctx := WithRunContext(context.Background(), rc)
 
 	// Before activating the skill:
-	// DangerousTool requires approval (PolicyAsk) under DefaultPermissionPolicy
-	callDanger := ToolCall{ID: "c1", Name: "DangerousTool", Arguments: json.RawMessage(`{}`)}
-	if dec := policy.Check(ctx, dangerousSpec, callDanger); dec != PolicyAsk {
+	// All non-ReadOnly tools require approval (PolicyAsk) under StrictPermissionPolicy
+	callHelper := ToolCall{ID: "c1", Name: "SafeHelper", Arguments: json.RawMessage(`{}`)}
+	if dec := policy.Check(ctx, safeHelperSpec, callHelper); dec != PolicyAsk {
 		t.Fatalf("expected PolicyAsk before skill activation, got %s", dec)
 	}
 
-	// Bash with git command also requires approval before skill activation
-	callGit := ToolCall{ID: "c2", Name: "Bash", Arguments: json.RawMessage(`{"command":"git status"}`)}
-	if dec := policy.Check(ctx, bashSpec, callGit); dec != PolicyAsk {
-		t.Fatalf("expected PolicyAsk for Bash before skill activation, got %s", dec)
+	callGit := ToolCall{ID: "c2", Name: "GitTool", Arguments: json.RawMessage(`{"command":"git status"}`)}
+	if dec := policy.Check(ctx, gitToolSpec, callGit); dec != PolicyAsk {
+		t.Fatalf("expected PolicyAsk for GitTool before skill activation, got %s", dec)
+	}
+
+	callDanger := ToolCall{ID: "c3", Name: "DangerousTool", Arguments: json.RawMessage(`{}`)}
+	if dec := policy.Check(ctx, dangerousSpec, callDanger); dec != PolicyAsk {
+		t.Fatalf("expected PolicyAsk for DangerousTool before skill activation, got %s", dec)
 	}
 
 	// Activate the skill via activate_skill tool
@@ -298,20 +310,28 @@ Use git safely.
 		t.Fatalf("activate_skill error: %v, res: %s", err, res.Text())
 	}
 
-	// After activation: DangerousTool should now be pre-approved (PolicyAllow)
-	if dec := policy.Check(ctx, dangerousSpec, callDanger); dec != PolicyAllow {
-		t.Fatalf("expected DangerousTool to be PolicyAllow after skill activation, got %s", dec)
+	// After activation: non-destructive SafeHelper is pre-approved (PolicyAllow)
+	if dec := policy.Check(ctx, safeHelperSpec, callHelper); dec != PolicyAllow {
+		t.Fatalf("expected SafeHelper to be PolicyAllow after skill activation, got %s", dec)
 	}
 
-	// Bash(git:*) should be pre-approved for git commands
-	if dec := policy.Check(ctx, bashSpec, callGit); dec != PolicyAllow {
-		t.Fatalf("expected Bash(git status) to be PolicyAllow after skill activation, got %s", dec)
+	// GitTool(git:*) is pre-approved for git commands
+	if dec := policy.Check(ctx, gitToolSpec, callGit); dec != PolicyAllow {
+		t.Fatalf("expected GitTool(git status) to be PolicyAllow after skill activation, got %s", dec)
 	}
 
-	// Bash with non-git command (e.g. rm -rf) must NOT be pre-approved (still PolicyAsk)
-	callRm := ToolCall{ID: "c3", Name: "Bash", Arguments: json.RawMessage(`{"command":"rm -rf /tmp/foo"}`)}
-	if dec := policy.Check(ctx, bashSpec, callRm); dec != PolicyAsk {
-		t.Fatalf("expected Bash(rm -rf) to remain PolicyAsk, got %s", dec)
+	// GitTool with non-git command must NOT be pre-approved (still PolicyAsk)
+	callOther := ToolCall{ID: "c4", Name: "GitTool", Arguments: json.RawMessage(`{"command":"rm -rf /tmp/foo"}`)}
+	if dec := policy.Check(ctx, gitToolSpec, callOther); dec != PolicyAsk {
+		t.Fatalf("expected GitTool(rm -rf) to remain PolicyAsk, got %s", dec)
+	}
+
+	// CRITICAL (CRIT-01): Destructive tools MUST NEVER be pre-approved by an active skill!
+	if dec := policy.Check(ctx, dangerousSpec, callDanger); dec != PolicyAsk {
+		t.Fatalf("expected Destructive DangerousTool to remain PolicyAsk even when listed in skill allowed-tools, got %s", dec)
+	}
+	if dec := DefaultPermissionPolicy().Check(ctx, dangerousSpec, callDanger); dec != PolicyAsk {
+		t.Fatalf("expected DefaultPermissionPolicy to keep Destructive DangerousTool as PolicyAsk, got %s", dec)
 	}
 }
 
@@ -349,5 +369,69 @@ func TestSkillDirectoryHelpers(t *testing.T) {
 	dirs := StandardSkillDirs("/my/project")
 	if len(dirs) == 0 || !strings.HasSuffix(dirs[0], path.Join(".agents", "skills")) {
 		t.Errorf("unexpected StandardSkillDirs: %v", dirs)
+	}
+}
+
+func TestAddSkillAllowedToolsConcurrent(t *testing.T) {
+	rc := &RunContext{}
+	const n = 50
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(idx int) {
+			defer wg.Done()
+			AddSkillAllowedTools(rc, fmt.Sprintf("tool_%d", idx))
+		}(i)
+	}
+	wg.Wait()
+
+	ctx := WithRunContext(context.Background(), rc)
+	allowed := ActiveSkillAllowedTools(ctx)
+	if len(allowed) != n {
+		t.Fatalf("expected all %d tools to be retained without race loss, got %d", n, len(allowed))
+	}
+}
+
+func TestSkillReadFileSymlinkTraversalBlocked(t *testing.T) {
+	outerDir := t.TempDir()
+	secretFile := filepath.Join(outerDir, "secret.txt")
+	if err := os.WriteFile(secretFile, []byte("top-secret-host-file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	skillsRoot := filepath.Join(outerDir, "skills")
+	skillDir := filepath.Join(skillsRoot, "my-skill")
+	if err := os.MkdirAll(skillDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: my-skill\ndescription: test\n---\nbody"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "safe.txt"), []byte("safe-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Create a symlink inside skillDir pointing outside to secretFile
+	if err := os.Symlink(secretFile, filepath.Join(skillDir, "leak.txt")); err != nil {
+		t.Skipf("symlink not supported on this filesystem: %v", err)
+	}
+
+	reg := NewSkillRegistry()
+	if err := reg.Load(SkillDir(skillsRoot)); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	s, ok := reg.Get("my-skill")
+	if !ok {
+		t.Fatal("my-skill not found")
+	}
+
+	// Reading safe.txt succeeds
+	data, err := s.ReadFile("safe.txt")
+	if err != nil || string(data) != "safe-content" {
+		t.Fatalf("expected safe.txt to be readable, got %q, err %v", string(data), err)
+	}
+
+	// Reading symlink leak.txt pointing outside skillDir MUST be blocked
+	if _, err := s.ReadFile("leak.txt"); err == nil {
+		t.Fatal("expected symlink escaping skill root to be rejected")
 	}
 }

@@ -94,11 +94,16 @@ func addStructFields(t reflect.Type, visiting map[reflect.Type]bool, props map[s
 		name, opts, _ := strings.Cut(tag, ",")
 		if f.Anonymous && name == "" {
 			ft := f.Type
-			if ft.Kind() == reflect.Pointer {
+			for ft.Kind() == reflect.Pointer {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct {
+				if visiting[ft] {
+					continue
+				}
+				visiting[ft] = true
 				addStructFields(ft, visiting, props, required)
+				delete(visiting, ft)
 				continue
 			}
 		}

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -33,10 +34,10 @@ type Agent struct {
 	hooks      HookChain
 	plugins    []Plugin
 
-	approvalMu   sync.Mutex
 	sessionMu    sync.Mutex
 	sessionGates map[string]*sessionGate
 	closeOnce    sync.Once
+	closed       atomic.Bool
 }
 
 type sessionGate struct {
@@ -182,6 +183,7 @@ func (a *Agent) lockSession(ctx context.Context, id string) (func(), error) {
 func (a *Agent) Close() error {
 	var errs []error
 	a.closeOnce.Do(func() {
+		a.closed.Store(true)
 		for _, v := range slices.Backward(a.plugins) {
 			if c, ok := v.(Closer); ok {
 				if err := c.Close(); err != nil {

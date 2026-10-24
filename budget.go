@@ -61,20 +61,20 @@ type budgetCounters struct {
 	usage      Usage
 }
 
-// budgetFrame is one run's view of the shared counters. Frames form a chain so
-// nested sub-agent limits and the parent limits are both enforced.
+// budgetFrame is one run's view of the budget hierarchy. Frames form a chain so
+// nested sub-agent limits and the parent limits are both enforced while keeping
+// sibling sub-agent counters and exceeded states isolated.
 type budgetFrame struct {
 	limits    BudgetLimits
-	base      budgetCounters
+	counters  budgetCounters
 	startedAt time.Time
 	deadline  time.Time
 	parent    *budgetFrame
+	exceeded  BudgetLimit
 }
 
 type budgetState struct {
-	mu       sync.Mutex
-	counters budgetCounters
-	exceeded BudgetLimit
+	mu sync.Mutex
 }
 
 type runBudget struct {
@@ -109,7 +109,6 @@ func newRunBudget(ctx context.Context, limits BudgetLimits, now time.Time) (cont
 		state = parent.state
 		frame = &budgetFrame{
 			limits:    limits,
-			base:      state.snapshot(),
 			startedAt: now,
 			parent:    parent.frame,
 		}
@@ -132,61 +131,58 @@ func newRunBudget(ctx context.Context, limits BudgetLimits, now time.Time) (cont
 	return withRunBudget(ctx, b), b, cancel
 }
 
-func (s *budgetState) snapshot() budgetCounters {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.counters
-}
-
-func (s *budgetState) noteLocked(limit BudgetLimit) {
-	if s.exceeded == "" {
-		s.exceeded = limit
+func (f *budgetFrame) noteLocked(limit BudgetLimit) {
+	if f.exceeded == "" {
+		f.exceeded = limit
 	}
 }
 
-// checkLocked reports the first limit that prospective counters violate.
-// The caller must hold s.mu.
-func (s *budgetState) checkLocked(frame *budgetFrame, next budgetCounters, now time.Time) BudgetLimit {
-	for f := frame; f != nil; f = f.parent {
-		l := f.limits
-		if l.MaxModelCalls > 0 && next.modelCalls-f.base.modelCalls > l.MaxModelCalls {
-			return BudgetModelCalls
+// noteChainLocked records limit on leaf and all ancestors up to and including target.
+func noteChainLocked(leaf, target *budgetFrame, limit BudgetLimit) {
+	for f := leaf; f != nil; f = f.parent {
+		f.noteLocked(limit)
+		if f == target {
+			break
 		}
-		if l.MaxToolCalls > 0 && next.toolCalls-f.base.toolCalls > l.MaxToolCalls {
-			return BudgetToolCalls
+	}
+}
+
+// checkFrameLocked reports the first limit that prospective counters violate on f.
+func checkFrameLocked(f *budgetFrame, next budgetCounters, now time.Time) BudgetLimit {
+	l := f.limits
+	if l.MaxModelCalls > 0 && next.modelCalls > l.MaxModelCalls {
+		return BudgetModelCalls
+	}
+	if l.MaxToolCalls > 0 && next.toolCalls > l.MaxToolCalls {
+		return BudgetToolCalls
+	}
+	if l.MaxTotalTokens > 0 {
+		used := next.usage.InputTokens + next.usage.OutputTokens
+		if used > l.MaxTotalTokens {
+			return BudgetTotalTokens
 		}
-		if l.MaxTotalTokens > 0 {
-			used := next.usage.InputTokens + next.usage.OutputTokens -
-				f.base.usage.InputTokens - f.base.usage.OutputTokens
-			if used > l.MaxTotalTokens {
-				return BudgetTotalTokens
-			}
-		}
-		if !f.deadline.IsZero() && !now.Before(f.deadline) {
-			return BudgetWallTime
-		}
+	}
+	if !f.deadline.IsZero() && !now.Before(f.deadline) {
+		return BudgetWallTime
 	}
 	return ""
 }
 
-// checkRequestLocked reports whether a request of est tokens would violate any
-// active frame's request or total-token limit. The caller must hold s.mu.
-func (s *budgetState) checkRequestLocked(frame *budgetFrame, est int, now time.Time) BudgetLimit {
-	usedTotal := s.counters.usage.InputTokens + s.counters.usage.OutputTokens
-	for f := frame; f != nil; f = f.parent {
-		l := f.limits
-		if l.MaxRequestTokens > 0 && est > l.MaxRequestTokens {
-			return BudgetRequestTokens
+// checkRequestFrameLocked reports whether a request of est tokens would violate
+// f's request or total-token limit.
+func checkRequestFrameLocked(f *budgetFrame, est int, now time.Time) BudgetLimit {
+	l := f.limits
+	if l.MaxRequestTokens > 0 && est > l.MaxRequestTokens {
+		return BudgetRequestTokens
+	}
+	if l.MaxTotalTokens > 0 {
+		used := f.counters.usage.InputTokens + f.counters.usage.OutputTokens
+		if used+est > l.MaxTotalTokens {
+			return BudgetTotalTokens
 		}
-		if l.MaxTotalTokens > 0 {
-			used := usedTotal - f.base.usage.InputTokens - f.base.usage.OutputTokens
-			if used+est > l.MaxTotalTokens {
-				return BudgetTotalTokens
-			}
-		}
-		if !f.deadline.IsZero() && !now.Before(f.deadline) {
-			return BudgetWallTime
-		}
+	}
+	if !f.deadline.IsZero() && !now.Before(f.deadline) {
+		return BudgetWallTime
 	}
 	return ""
 }
@@ -194,22 +190,28 @@ func (s *budgetState) checkRequestLocked(frame *budgetFrame, est int, now time.T
 func (b *runBudget) exceeded() BudgetLimit {
 	b.state.mu.Lock()
 	defer b.state.mu.Unlock()
-	return b.state.exceeded
+	for f := b.frame; f != nil; f = f.parent {
+		if f.exceeded != "" {
+			return f.exceeded
+		}
+	}
+	return ""
 }
 
 // wallExpired reports whether any frame's deadline has passed, recording the
-// wall-time limit when it has.
+// wall-time limit on the expired frame(s) when it has.
 func (b *runBudget) wallExpired() bool {
 	now := time.Now()
 	b.state.mu.Lock()
 	defer b.state.mu.Unlock()
+	expired := false
 	for f := b.frame; f != nil; f = f.parent {
 		if !f.deadline.IsZero() && !now.Before(f.deadline) {
-			b.state.noteLocked(BudgetWallTime)
-			return true
+			noteChainLocked(b.frame, f, BudgetWallTime)
+			expired = true
 		}
 	}
-	return false
+	return expired
 }
 
 // precheck reports a limit that is already exceeded before work starts.
@@ -226,13 +228,18 @@ func (b *runBudget) reserveModelCall() BudgetLimit {
 	s := b.state
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	next := s.counters
-	next.modelCalls++
-	if limit := s.checkLocked(b.frame, next, time.Now()); limit != "" {
-		s.noteLocked(limit)
-		return limit
+	now := time.Now()
+	for f := b.frame; f != nil; f = f.parent {
+		next := f.counters
+		next.modelCalls++
+		if limit := checkFrameLocked(f, next, now); limit != "" {
+			noteChainLocked(b.frame, f, limit)
+			return limit
+		}
 	}
-	s.counters = next
+	for f := b.frame; f != nil; f = f.parent {
+		f.counters.modelCalls++
+	}
 	return ""
 }
 
@@ -244,13 +251,18 @@ func (b *runBudget) reserveToolCalls(n int) BudgetLimit {
 	s := b.state
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	next := s.counters
-	next.toolCalls += n
-	if limit := s.checkLocked(b.frame, next, time.Now()); limit != "" {
-		s.noteLocked(limit)
-		return limit
+	now := time.Now()
+	for f := b.frame; f != nil; f = f.parent {
+		next := f.counters
+		next.toolCalls += n
+		if limit := checkFrameLocked(f, next, now); limit != "" {
+			noteChainLocked(b.frame, f, limit)
+			return limit
+		}
 	}
-	s.counters = next
+	for f := b.frame; f != nil; f = f.parent {
+		f.counters.toolCalls += n
+	}
 	return ""
 }
 
@@ -260,9 +272,12 @@ func (b *runBudget) checkRequestTokens(est int) BudgetLimit {
 	s := b.state
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if limit := s.checkRequestLocked(b.frame, est, time.Now()); limit != "" {
-		s.noteLocked(limit)
-		return limit
+	now := time.Now()
+	for f := b.frame; f != nil; f = f.parent {
+		if limit := checkRequestFrameLocked(f, est, now); limit != "" {
+			noteChainLocked(b.frame, f, limit)
+			return limit
+		}
 	}
 	return ""
 }
@@ -272,9 +287,12 @@ func (b *runBudget) addUsage(u Usage) {
 	s := b.state
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.counters.usage.Add(u)
-	if limit := s.checkLocked(b.frame, s.counters, time.Now()); limit != "" {
-		s.noteLocked(limit)
+	now := time.Now()
+	for f := b.frame; f != nil; f = f.parent {
+		f.counters.usage.Add(u)
+		if limit := checkFrameLocked(f, f.counters, now); limit != "" {
+			noteChainLocked(b.frame, f, limit)
+		}
 	}
 }
 
@@ -282,31 +300,30 @@ func (b *runBudget) addUsage(u Usage) {
 func (b *runBudget) usage() Usage {
 	b.state.mu.Lock()
 	defer b.state.mu.Unlock()
-	return subUsage(b.state.counters.usage, b.frame.base.usage)
+	return b.frame.counters.usage
 }
 
 // budgetUsage returns this run's share of calls, tokens, and wall time.
 func (b *runBudget) budgetUsage() BudgetUsage {
 	b.state.mu.Lock()
 	defer b.state.mu.Unlock()
-	c := b.state.counters
-	base := b.frame.base
-	return BudgetUsage{
-		ModelCalls:   c.modelCalls - base.modelCalls,
-		ToolCalls:    c.toolCalls - base.toolCalls,
-		InputTokens:  c.usage.InputTokens - base.usage.InputTokens,
-		OutputTokens: c.usage.OutputTokens - base.usage.OutputTokens,
-		Wall:         time.Since(b.frame.startedAt),
-		Exceeded:     b.state.exceeded,
+	c := b.frame.counters
+	exceeded := b.frame.exceeded
+	if exceeded == "" {
+		for f := b.frame.parent; f != nil; f = f.parent {
+			if f.exceeded != "" {
+				exceeded = f.exceeded
+				break
+			}
+		}
 	}
-}
-
-func subUsage(a, b Usage) Usage {
-	return Usage{
-		InputTokens:      a.InputTokens - b.InputTokens,
-		OutputTokens:     a.OutputTokens - b.OutputTokens,
-		CacheReadTokens:  a.CacheReadTokens - b.CacheReadTokens,
-		CacheWriteTokens: a.CacheWriteTokens - b.CacheWriteTokens,
+	return BudgetUsage{
+		ModelCalls:   c.modelCalls,
+		ToolCalls:    c.toolCalls,
+		InputTokens:  c.usage.InputTokens,
+		OutputTokens: c.usage.OutputTokens,
+		Wall:         time.Since(b.frame.startedAt),
+		Exceeded:     exceeded,
 	}
 }
 

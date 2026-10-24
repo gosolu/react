@@ -47,23 +47,40 @@ func AllowAllPermissionPolicy() PermissionPolicy {
 	return PermissionPolicyFunc(func(context.Context, ToolSpec, ToolCall) PolicyDecision { return PolicyAllow })
 }
 
-// DefaultPermissionPolicy allows read-only and unannotated tools, pre-approves tools allowed by active skills,
-// and asks for Destructive ones.
+// DefaultPermissionPolicy allows read-only and unannotated tools, pre-approves
+// non-destructive tools allowed by active skills, and asks for Destructive ones.
 func DefaultPermissionPolicy() PermissionPolicy {
 	return PermissionPolicyFunc(func(ctx context.Context, s ToolSpec, c ToolCall) PolicyDecision {
+		if s.Annotations.Destructive {
+			return PolicyAsk
+		}
 		if matchRules(ActiveSkillAllowedTools(ctx), s, c) {
 			return PolicyAllow
-		}
-		if s.Annotations.Destructive && !s.Annotations.ReadOnly {
-			return PolicyAsk
 		}
 		return PolicyAllow
 	})
 }
 
+// StrictPermissionPolicy allows ReadOnly tools, pre-approves non-destructive tools
+// allowed by active skills, and asks for all unannotated or Destructive tools.
+func StrictPermissionPolicy() PermissionPolicy {
+	return PermissionPolicyFunc(func(ctx context.Context, s ToolSpec, c ToolCall) PolicyDecision {
+		if s.Annotations.Destructive {
+			return PolicyAsk
+		}
+		if s.Annotations.ReadOnly {
+			return PolicyAllow
+		}
+		if matchRules(ActiveSkillAllowedTools(ctx), s, c) {
+			return PolicyAllow
+		}
+		return PolicyAsk
+	})
+}
+
 // PermissionRules matches tool names against glob patterns (path.Match syntax).
-// Precedence: PolicyDeny, then PolicyAsk, then PolicyAllow, then active skill allowed-tools,
-// then Fallback (DefaultPermissionPolicy() if nil).
+// Precedence: PolicyDeny, then PolicyAsk, then PolicyAllow, then active skill allowed-tools
+// (for non-destructive tools), then Fallback (DefaultPermissionPolicy() if nil).
 type PermissionRules struct {
 	Allow    []string
 	Ask      []string
@@ -79,7 +96,7 @@ func (r PermissionRules) Check(ctx context.Context, s ToolSpec, c ToolCall) Poli
 		return PolicyAsk
 	case matchRules(r.Allow, s, c):
 		return PolicyAllow
-	case matchRules(ActiveSkillAllowedTools(ctx), s, c):
+	case !s.Annotations.Destructive && matchRules(ActiveSkillAllowedTools(ctx), s, c):
 		return PolicyAllow
 	}
 	if r.Fallback != nil {
@@ -215,7 +232,7 @@ func matchStructuredArgs(argPattern string, argMap map[string]any) bool {
 				return true
 			}
 			strVal := fmt.Sprint(val)
-			if ok, _ := path.Match(valPat, strVal); ok {
+			if matchGlob(valPat, strVal) {
 				return true
 			}
 		}
@@ -224,7 +241,7 @@ func matchStructuredArgs(argPattern string, argMap map[string]any) bool {
 
 	for _, v := range argMap {
 		if strVal, ok := v.(string); ok {
-			if ok, _ := path.Match(argPattern, strVal); ok {
+			if matchGlob(argPattern, strVal) {
 				return true
 			}
 		}
@@ -234,7 +251,29 @@ func matchStructuredArgs(argPattern string, argMap map[string]any) bool {
 
 func match(patterns []string, name string) bool {
 	for _, p := range patterns {
-		if ok, _ := path.Match(p, name); ok {
+		if matchGlob(p, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchGlob(pattern, value string) bool {
+	if pattern == "*" || pattern == "**" || pattern == value {
+		return true
+	}
+	if ok, err := path.Match(pattern, value); err == nil && ok {
+		return true
+	}
+	if strings.HasSuffix(pattern, "/**") {
+		prefix := strings.TrimSuffix(pattern, "/**")
+		if value == prefix || strings.HasPrefix(value, prefix+"/") {
+			return true
+		}
+	}
+	if strings.HasSuffix(pattern, "/*") {
+		prefix := strings.TrimSuffix(pattern, "/*")
+		if strings.HasPrefix(value, prefix+"/") {
 			return true
 		}
 	}
@@ -248,8 +287,7 @@ type ApprovalRequest struct {
 	Call      ToolCall
 }
 
-// PermissionApprover asks a human (or system) to approve a call. Approve calls are
-// serialized by the agent.
+// PermissionApprover asks a human (or system) to approve a call.
 type PermissionApprover interface {
 	Approve(ctx context.Context, req ApprovalRequest) (bool, error)
 }

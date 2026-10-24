@@ -30,7 +30,7 @@ type fileSessionRecord struct {
 
 // NewFileStore creates or opens a directory-backed session store.
 func NewFileStore(dir string) (*FileStore, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("react: failed to create store directory: %w", err)
 	}
 	return &FileStore{dir: dir}, nil
@@ -120,13 +120,9 @@ func (s *FileStore) Sessions() []string {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || strings.Contains(entry.Name(), ".tmp") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(s.dir, entry.Name()))
-		if err != nil {
-			continue
-		}
-		var rec fileSessionRecord
-		if err := json.Unmarshal(data, &rec); err == nil && rec.SessionID != "" {
-			out = append(out, rec.SessionID)
+		hexPart := strings.TrimSuffix(entry.Name(), ".json")
+		if raw, err := hex.DecodeString(hexPart); err == nil && len(raw) > 0 {
+			out = append(out, string(raw))
 		}
 	}
 	return out

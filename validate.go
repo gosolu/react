@@ -60,6 +60,9 @@ func (a *Agent) Validate() error {
 			errs = append(errs, errors.New("agent: tool with empty name"))
 			continue
 		}
+		if spec.Annotations.Destructive && spec.Annotations.ReadOnly {
+			errs = append(errs, fmt.Errorf("agent: tool %q cannot be both Destructive and ReadOnly", spec.Name))
+		}
 		if len(spec.InputSchema) == 0 {
 			errs = append(errs, fmt.Errorf("agent: tool %q has no input schema", spec.Name))
 			continue

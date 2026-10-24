@@ -111,6 +111,12 @@ func WithPermission(p PermissionPolicy, a PermissionApprover) Option {
 // WithPolicy sets the tool permission policy without changing the approver.
 func WithPolicy(p PermissionPolicy) Option { return func(c *config) { c.policy = p } }
 
+// WithStrictPermissions configures StrictPermissionPolicy, which defaults
+// unannotated tools to PolicyAsk and only auto-allows ReadOnly tools.
+func WithStrictPermissions() Option {
+	return func(c *config) { c.policy = StrictPermissionPolicy() }
+}
+
 // WithApprover sets the human-in-the-loop approver for "ask" decisions.
 func WithApprover(a PermissionApprover) Option { return func(c *config) { c.approver = a } }
 

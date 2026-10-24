@@ -37,10 +37,16 @@ func (r *SkillRegistry) Tools() []Tool {
 			}
 			key := "skill.active." + s.Name
 			if rc := RunContextFrom(ctx); rc != nil {
-				if _, already := rc.Get(key); already {
+				var already bool
+				rc.Update(key, func(old any) any {
+					if b, ok := old.(bool); ok && b {
+						already = true
+					}
+					return true
+				})
+				if already {
 					return TextResult(fmt.Sprintf("Skill %q is already active; its instructions are above.", s.Name)), nil
 				}
-				rc.Set(key, true)
 				if len(s.AllowedTools) > 0 {
 					AddSkillAllowedTools(rc, s.AllowedTools...)
 				}

@@ -237,5 +237,30 @@ func TestStructuredPermissionMatchingShellMetacharacters(t *testing.T) {
 		} else {
 			t.Errorf("expected rule read_file(path:/tmp/*) NOT to match /etc/passwd")
 		}
+
+		// Nested path matching under /etc/* (LOW-04)
+		denyEtc := PermissionRules{
+			Deny: []string{"read_file(path:/etc/*)"},
+		}
+		nestedEtcCall := ToolCall{
+			Name:      "read_file",
+			Arguments: json.RawMessage(`{"path":"/etc/ssl/cert.pem"}`),
+		}
+		if dec := denyEtc.Check(ctx, fileSpec, nestedEtcCall); dec != PolicyDeny {
+			t.Errorf("expected read_file(path:/etc/*) to deny nested /etc/ssl/cert.pem, got %s", dec)
+		}
+	})
+
+	t.Run("StrictPermissionPolicyDefaultsUnannotatedToAsk", func(t *testing.T) {
+		policy := StrictPermissionPolicy()
+		unannotated := ToolSpec{Name: "mutate_db", Description: "Unannotated mutating tool"}
+		readOnly := ToolSpec{Name: "get_row", Description: "ReadOnly tool", Annotations: ToolAnnotations{ReadOnly: true}}
+		call := ToolCall{Name: "mutate_db", Arguments: json.RawMessage(`{}`)}
+		if dec := policy.Check(ctx, unannotated, call); dec != PolicyAsk {
+			t.Errorf("expected StrictPermissionPolicy to return PolicyAsk for unannotated tool, got %s", dec)
+		}
+		if dec := policy.Check(ctx, readOnly, ToolCall{Name: "get_row"}); dec != PolicyAllow {
+			t.Errorf("expected StrictPermissionPolicy to return PolicyAllow for ReadOnly tool, got %s", dec)
+		}
 	})
 }

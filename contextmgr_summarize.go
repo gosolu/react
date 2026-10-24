@@ -110,14 +110,30 @@ func (s *ContextSummarizer) summarize(ctx context.Context, msgs []Message) (stri
 	if maxTok <= 0 {
 		maxTok = 1024
 	}
-	resp, err := s.Provider.Generate(ctx, &Request{
+	req := &Request{
 		Model:     s.Model,
 		System:    prompt,
 		Messages:  []Message{UserText(transcript)},
 		MaxTokens: maxTok,
-	})
+	}
+	rb := runBudgetFrom(ctx)
+	if rb != nil {
+		if limit := rb.checkRequestTokens(estimateRequestTokens(req)); limit != "" {
+			return "", budgetError(limit)
+		}
+		if limit := rb.reserveModelCall(); limit != "" {
+			return "", budgetError(limit)
+		}
+	}
+	resp, err := s.Provider.Generate(ctx, req)
 	if err != nil {
 		return "", err
+	}
+	if rb != nil {
+		rb.addUsage(resp.Usage)
+		if limit := rb.exceeded(); limit != "" {
+			return "", budgetError(limit)
+		}
 	}
 	text := strings.TrimSpace(resp.Message.Text())
 

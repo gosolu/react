@@ -8,7 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -21,6 +22,9 @@ type emitFunc func(Event) bool
 
 // execute is the single ReAct loop shared by Run and Stream.
 func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runConfig, stream bool, sink emitFunc) (result *Result, err error) {
+	if a.closed.Load() {
+		return nil, ErrAgentClosed
+	}
 	depth := depthFrom(ctx)
 	if depth > a.cfg.maxDepth {
 		return nil, ErrMaxDepth
@@ -65,7 +69,38 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 	ctx = withHooks(ctx, a.hooks)
 	ctx = context.WithValue(ctx, depthKey{}, depth)
 	ctx = context.WithValue(ctx, emitterKey{}, emitFunc(emit))
+
+	finalized := false
+	finalize := func() {
+		if result == nil || finalized {
+			return
+		}
+		finalized = true
+		result.RunID = rc.RunID
+		result.Usage = rb.usage()
+		result.Budget = rb.budgetUsage()
+		result.Duration = time.Since(runStart)
+		result.StopReason = terminalStopReason(err, result.StopReason)
+	}
+
 	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("agent: runtime panic recovered: %v\n%s", r, debug.Stack())
+			if result == nil {
+				result = &Result{RunID: rc.RunID}
+			}
+			result.StopReason = StopError
+		}
+		finalize()
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("agent: hook panic recovered: %v\n%s", r, debug.Stack())
+				if result == nil {
+					result = &Result{RunID: rc.RunID}
+				}
+				result.StopReason = StopError
+			}
+		}()
 		if err != nil {
 			a.hooks.StopFailure(ctx, rc, err)
 		}
@@ -104,25 +139,17 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 	}
 	user := Message{Role: RoleUser}
 	if input != "" {
-		user.Content = append(user.Content, TextPart(input))
+		user.Content = append(user.Content, TextPart(sanitizeSystemReminderTags(input)))
 	}
-	user.Content = append(user.Content, rcfg.parts...)
+	for _, p := range rcfg.parts {
+		if p.Type == PartText {
+			p.Text = sanitizeSystemReminderTags(p.Text)
+		}
+		user.Content = append(user.Content, p)
+	}
 	history = append(history, user)
 
 	result = &Result{RunID: rc.RunID, Messages: []Message{user}}
-	finalized := false
-	finalize := func() {
-		if result == nil || finalized {
-			return
-		}
-		finalized = true
-		result.RunID = rc.RunID
-		result.Usage = rb.usage()
-		result.Budget = rb.budgetUsage()
-		result.Duration = time.Since(runStart)
-		result.StopReason = terminalStopReason(err, result.StopReason)
-	}
-	defer finalize()
 	pending := []Message{user}
 	// flush persists completed turns. It uses a non-cancellable context so a
 	// finished turn is saved even if the run is cancelled right after.
@@ -175,6 +202,9 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 		a.hooks.PreCompact(ctx, rc, len(history))
 		msgs, ferr := a.cfg.ctxManager.Fit(ctx, a.system, history, a.cfg.contextBudget)
 		if ferr != nil {
+			if errors.Is(ferr, ErrBudgetExceeded) {
+				result.StopReason = StopBudgetExceeded
+			}
 			return result, fmt.Errorf("agent: context manager: %w", ferr)
 		}
 		a.hooks.PostCompact(ctx, rc, len(history), len(msgs))
@@ -340,7 +370,7 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 			err = budgetError(limit)
 			break
 		}
-		toolMsgs := a.runTools(ctx, rc, activeReg, msg.ToolCalls, emit)
+		toolMsgs, batchErr := a.runTools(ctx, rc, activeReg, msg.ToolCalls, emit)
 		history = append(history, toolMsgs...)
 		pending = append(pending, toolMsgs...)
 		result.Messages = append(result.Messages, toolMsgs...)
@@ -348,6 +378,9 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 			return result, err
 		}
 		emit(Event{Type: EventTurnEnd})
+		if batchErr != nil {
+			return result, batchErr
+		}
 		if limit := rb.precheck(); limit != "" {
 			result.StopReason = StopBudgetExceeded
 			err = budgetError(limit)
@@ -385,15 +418,22 @@ func (a *Agent) callModel(ctx context.Context, req *Request, stream bool, emit e
 			return nil, err
 		}
 		acc.Add(ev)
+		ok := true
 		switch ev.Type {
 		case StreamTextDelta:
-			emit(Event{Type: EventTextDelta, Text: ev.Text})
+			ok = emit(Event{Type: EventTextDelta, Text: ev.Text})
 		case StreamReasoningDelta:
-			emit(Event{Type: EventReasoningDelta, Text: ev.Text})
+			ok = emit(Event{Type: EventReasoningDelta, Text: ev.Text})
 		case StreamToolCallStart:
-			emit(Event{Type: EventToolCallStart, ToolIndex: ev.Index, ToolCall: &ToolCall{ID: ev.ToolCallID, Name: ev.ToolName}})
+			ok = emit(Event{Type: EventToolCallStart, ToolIndex: ev.Index, ToolCall: &ToolCall{ID: ev.ToolCallID, Name: ev.ToolName}})
 		case StreamToolCallDelta:
-			emit(Event{Type: EventToolCallDelta, ToolIndex: ev.Index, Text: ev.ArgsDelta})
+			ok = emit(Event{Type: EventToolCallDelta, ToolIndex: ev.Index, Text: ev.ArgsDelta})
+		}
+		if !ok {
+			if cerr := ctx.Err(); cerr != nil {
+				return nil, cerr
+			}
+			return nil, context.Canceled
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -404,7 +444,7 @@ func (a *Agent) callModel(ctx context.Context, req *Request, stream bool, emit e
 
 // runTools executes a batch of tool calls and returns tool-result messages in
 // call order. EventToolResult and the messages carry the bounded result.
-func (a *Agent) runTools(ctx context.Context, rc *RunContext, reg *ToolRegistry, calls []ToolCall, emit emitFunc) []Message {
+func (a *Agent) runTools(ctx context.Context, rc *RunContext, reg *ToolRegistry, calls []ToolCall, emit emitFunc) ([]Message, error) {
 	mws := a.middleware
 	if a.cfg.toolTimeout > 0 {
 		// Innermost, so approval waits do not count against the tool timeout.
@@ -431,9 +471,7 @@ func (a *Agent) runTools(ctx context.Context, rc *RunContext, reg *ToolRegistry,
 		emit(Event{Type: EventToolResult, ToolCall: &call, ToolIndex: i, ToolResult: &res, Duration: cr.Duration})
 	})
 
-	if err := a.hooks.AfterToolBatch(ctx, rc, results); err != nil {
-		// TODO: tool hook error
-	}
+	batchErr := a.hooks.AfterToolBatch(ctx, rc, results)
 
 	msgs := make([]Message, len(results))
 	for i, cr := range results {
@@ -443,7 +481,7 @@ func (a *Agent) runTools(ctx context.Context, rc *RunContext, reg *ToolRegistry,
 		}
 		msgs[i] = ToolResultMessage(cr.Call.ID, cr.Call.Name, content, cr.Result.IsError)
 	}
-	return msgs
+	return msgs, batchErr
 }
 
 // toolOutputLimit resolves the model-facing output limit for one tool.
@@ -474,21 +512,21 @@ func emitBudgetToolResults(calls []ToolCall, limit BudgetLimit, emit emitFunc, r
 	return msgs
 }
 
-// truncateParts returns a bounded copy of the text parts of a tool result.
+// truncateParts returns a bounded, sanitized copy of the text parts of a tool result.
 func truncateParts(parts []Part, limit int) ([]Part, bool) {
 	if len(parts) == 0 {
 		return nil, false
 	}
-	if limit <= 0 {
-		return parts, false
-	}
 	out := make([]Part, len(parts))
 	truncated := false
 	for i, p := range parts {
-		if p.Type == PartText && len(p.Text) > limit {
-			origLen := len(p.Text)
-			p.Text = fmt.Sprintf("%s\n...[output truncated from %d bytes]", utf8util.TruncateString(p.Text, limit), origLen)
-			truncated = true
+		if p.Type == PartText {
+			p.Text = sanitizeSystemReminderTags(p.Text)
+			if limit > 0 && len(p.Text) > limit {
+				origLen := len(p.Text)
+				p.Text = fmt.Sprintf("%s\n...[output truncated from %d bytes]", utf8util.TruncateString(p.Text, limit), origLen)
+				truncated = true
+			}
 		}
 		out[i] = p
 	}
@@ -497,7 +535,9 @@ func truncateParts(parts []Part, limit int) ([]Part, bool) {
 
 func (a *Agent) checkPolicy(ctx context.Context, spec ToolSpec, call ToolCall) PolicyDecision {
 	dec := a.cfg.policy.Check(ctx, spec, call)
-	if dec == PolicyAsk && matchRules(ActiveSkillAllowedTools(ctx), spec, call) {
+	// NEVER downgrade PolicyAsk to PolicyAllow for tools annotated as Destructive.
+	// Active skills can only pre-approve non-destructive tools.
+	if dec == PolicyAsk && !spec.Annotations.Destructive && matchRules(ActiveSkillAllowedTools(ctx), spec, call) {
 		dec = PolicyAllow
 	}
 	return dec
@@ -545,12 +585,12 @@ func (a *Agent) handleCall(ctx context.Context, rc *RunContext, reg *ToolRegistr
 		if !json.Valid(call.Arguments) {
 			return ErrorResult(fmt.Sprintf("Error: hook rewrote arguments for %s to invalid JSON: %s", call.Name, call.Arguments)), nil
 		}
-		log.Printf("[audit] tool call %q arguments rewritten by BeforeTool: %s -> %s", call.Name, string(origArgs), string(call.Arguments))
+		slog.Info("tool call arguments rewritten by BeforeTool", "tool", call.Name, "from", redactSecrets(origArgs), "to", redactSecrets(call.Arguments))
 		emit(Event{
 			Type:         EventToolCallRewritten,
 			ToolCall:     &call,
 			OriginalArgs: origArgs,
-			Text:         fmt.Sprintf("BeforeTool rewrote arguments for %s from %s to %s", call.Name, string(origArgs), string(call.Arguments)),
+			Text:         fmt.Sprintf("BeforeTool rewrote arguments for %s from %s to %s", call.Name, redactSecrets(origArgs), redactSecrets(call.Arguments)),
 		})
 	}
 
@@ -576,12 +616,12 @@ func (a *Agent) handleCall(ctx context.Context, rc *RunContext, reg *ToolRegistr
 				if !json.Valid(call.Arguments) {
 					return ErrorResult(fmt.Sprintf("Error: OnPermissionRequest rewrote arguments for %s to invalid JSON: %s", call.Name, call.Arguments)), nil
 				}
-				log.Printf("[audit] tool call %q arguments rewritten by OnPermissionRequest: %s -> %s", call.Name, string(reqArgs), string(call.Arguments))
+				slog.Info("tool call arguments rewritten by OnPermissionRequest", "tool", call.Name, "from", redactSecrets(reqArgs), "to", redactSecrets(call.Arguments))
 				emit(Event{
 					Type:         EventToolCallRewritten,
 					ToolCall:     &call,
 					OriginalArgs: reqArgs,
-					Text:         fmt.Sprintf("OnPermissionRequest rewrote arguments for %s from %s to %s", call.Name, string(reqArgs), string(call.Arguments)),
+					Text:         fmt.Sprintf("OnPermissionRequest rewrote arguments for %s from %s to %s", call.Name, redactSecrets(reqArgs), redactSecrets(call.Arguments)),
 				})
 
 				// Re-evaluate policy on updated arguments.
@@ -626,14 +666,54 @@ func (a *Agent) askApproval(ctx context.Context, spec ToolSpec, call ToolCall, e
 	if a.cfg.approver == nil {
 		return false, nil
 	}
-	a.approvalMu.Lock()
-	defer a.approvalMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
 	req := ApprovalRequest{AgentName: a.cfg.name, Spec: spec, Call: call}
 	emit(Event{Type: EventApprovalRequested, ToolCall: &call, Approval: &req})
 	return a.cfg.approver.Approve(ctx, req)
+}
+
+// sanitizeSystemReminderTags escapes literal <system-reminder> tags in untrusted
+// user or tool content so they cannot spoof framework system reminders.
+func sanitizeSystemReminderTags(s string) string {
+	if !strings.Contains(strings.ToLower(s), "system-reminder") {
+		return s
+	}
+	r := strings.NewReplacer(
+		"<system-reminder>", "&lt;system-reminder&gt;",
+		"</system-reminder>", "&lt;/system-reminder&gt;",
+		"<SYSTEM-REMINDER>", "&lt;SYSTEM-REMINDER&gt;",
+		"</SYSTEM-REMINDER>", "&lt;/SYSTEM-REMINDER&gt;",
+	)
+	return r.Replace(s)
+}
+
+// redactSecrets masks sensitive fields in JSON arguments before logging.
+func redactSecrets(raw json.RawMessage) string {
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return string(raw)
+	}
+	redacted := false
+	for k := range m {
+		lower := strings.ToLower(k)
+		if strings.Contains(lower, "password") || strings.Contains(lower, "secret") ||
+			strings.Contains(lower, "token") || strings.Contains(lower, "api_key") ||
+			strings.Contains(lower, "apikey") || strings.Contains(lower, "authorization") ||
+			strings.Contains(lower, "credential") || strings.Contains(lower, "private_key") {
+			m[k] = "[REDACTED]"
+			redacted = true
+		}
+	}
+	if !redacted {
+		return string(raw)
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return string(raw)
+	}
+	return string(b)
 }
 
 // terminalStopReason maps a run error to a stop reason. Explicit terminal
