@@ -332,7 +332,7 @@ func TestGeminiToolChoice_And_Schema(t *testing.T) {
 	}`)
 
 	req := &react.Request{
-		Model:      ModelGemini4Pro,
+		Model:      ModelGemini4Argon,
 		ToolChoice: "search_tool",
 		Tools: []react.ToolSpec{
 			{

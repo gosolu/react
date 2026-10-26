@@ -25,12 +25,9 @@ const DefaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
 
 // Latest Google Gemini model identifiers.
 const (
-	ModelGemini4Argon      = "gemini-4-argon"
-	ModelGemini4Pro        = "gemini-4-pro"
-	ModelGemini4Flash      = "gemini-4-flash"
-	ModelGemini38Pro       = "gemini-3.8-pro"
-	ModelGemini38Flash     = "gemini-3.8-flash"
-	ModelGemini38FlashLite = "gemini-3.8-flash-lite"
+	ModelGemini4Argon  = "gemini-4-argon"
+	ModelGemini4Flash  = "gemini-4-flash"
+	ModelGemini38Flash = "gemini-3.8-flash"
 )
 
 // Config configures the Gemini provider.
