@@ -16,13 +16,14 @@ import (
 	"github.com/gosolu/react/provider"
 	"github.com/gosolu/react/provider/anthropic"
 	"github.com/gosolu/react/provider/deepseek"
+	"github.com/gosolu/react/provider/gemini"
 	"github.com/gosolu/react/provider/mock"
 	"github.com/gosolu/react/provider/openai"
 	"github.com/gosolu/react/provider/opencode"
 )
 
 func main() {
-	providerFlag := flag.String("provider", "mock", "LLM provider: openai | anthropic | deepseek | opencode | mock")
+	providerFlag := flag.String("provider", "mock", "LLM provider: openai | anthropic | deepseek | opencode | gemini | mock")
 	apiFlag := flag.String("api", "completions", "API protocol: completions | responses")
 	modelFlag := flag.String("model", "", "Model identifier (defaults to provider standard)")
 	baseURLFlag := flag.String("base-url", "", "Custom BaseURL (e.g. for Ollama / vLLM / local AI)")
@@ -97,12 +98,28 @@ func main() {
 			APIType:   apiType,
 			SessionID: *sessionFlag,
 		})
+	case "gemini":
+		apiKey := os.Getenv("GEMINI_API_KEY")
+		if apiKey == "" {
+			apiKey = os.Getenv("GOOGLE_API_KEY")
+		}
+		if apiKey == "" {
+			fmt.Println("Warning: GEMINI_API_KEY (or GOOGLE_API_KEY) environment variable is not set.")
+		}
+		if model == "" {
+			model = gemini.ModelGemini38Flash
+		}
+		p = gemini.New(gemini.Config{
+			APIKey:  apiKey,
+			BaseURL: *baseURLFlag,
+			APIType: apiType,
+		})
 	case "mock":
 		if model == "" {
 			model = "mock-model"
 		}
 		p = mock.New(
-			mock.Text("Hello! I am running in mock offline mode. Configure --provider openai, anthropic, deepseek, or opencode for live models."),
+			mock.Text("Hello! I am running in mock offline mode. Configure --provider openai, anthropic, deepseek, opencode, or gemini for live models."),
 		)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown provider: %s\n", *providerFlag)

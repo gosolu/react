@@ -351,3 +351,102 @@ func TestOpenAICachedTokensAndMultimodalToolResult(t *testing.T) {
 		t.Errorf("expected type image_url, got %v", imgPart["type"])
 	}
 }
+
+func TestOpenAIGeminiThoughtSignature(t *testing.T) {
+	var capturedBody map[string]any
+
+	mockClient := &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+			respJSON := `{
+				"choices": [{
+					"message": {
+						"role": "assistant",
+						"content": "",
+						"tool_calls": [{
+							"id": "call_gemini_1",
+							"type": "function",
+							"function": {
+								"name": "calc",
+								"arguments": "{\"x\": 10}"
+							},
+							"extra_content": {
+								"google": {
+									"thought_signature": "sig_gemini_openai_123"
+								}
+							}
+						}]
+					},
+					"finish_reason": "stop"
+				}],
+				"usage": {
+					"prompt_tokens": 10,
+					"completion_tokens": 5
+				}
+			}`
+			return &http.Response{
+				StatusCode: 200,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(respJSON)),
+			}, nil
+		}),
+	}
+
+	p := New(Config{
+		APIKey:     "test-key",
+		HTTPClient: mockClient,
+	})
+
+	// 1. First call: verify response parses ThoughtSignature and finish_reason "stop" with tool calls is mapped to StopToolCall
+	resp, err := p.Generate(context.Background(), &react.Request{
+		Model:    "gemini-3.8-flash",
+		Messages: []react.Message{react.UserText("calculate")},
+	})
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	if resp.StopReason != react.StopToolCall {
+		t.Fatalf("expected StopToolCall, got %v", resp.StopReason)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(resp.Message.ToolCalls))
+	}
+	if resp.Message.ToolCalls[0].ThoughtSignature != "sig_gemini_openai_123" {
+		t.Fatalf("thoughtSignature = %q, want 'sig_gemini_openai_123'", resp.Message.ToolCalls[0].ThoughtSignature)
+	}
+
+	// 2. Second call: echo assistant message with ThoughtSignature back to provider
+	req2 := &react.Request{
+		Model: "gemini-3.8-flash",
+		Messages: []react.Message{
+			react.UserText("calculate"),
+			resp.Message,
+			{
+				Role:       react.RoleTool,
+				ToolCallID: "call_gemini_1",
+				Name:       "calc",
+				Content:    []react.Part{react.TextPart(`{"result": 20}`)},
+			},
+		},
+	}
+
+	_, err = p.Generate(context.Background(), req2)
+	if err != nil {
+		t.Fatalf("Generate turn 2 failed: %v", err)
+	}
+
+	// Verify request body includes extra_content.google.thought_signature on assistant message tool_calls
+	msgs := capturedBody["messages"].([]any)
+	asst := msgs[1].(map[string]any)
+	tcs := asst["tool_calls"].([]any)
+	tc0 := tcs[0].(map[string]any)
+	extra, ok := tc0["extra_content"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing extra_content in tool_calls: %+v", tc0)
+	}
+	googleMap, ok := extra["google"].(map[string]any)
+	if !ok || googleMap["thought_signature"] != "sig_gemini_openai_123" {
+		t.Fatalf("thought_signature mismatch: %+v", extra)
+	}
+}

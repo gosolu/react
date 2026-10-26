@@ -39,8 +39,9 @@ type StreamEvent struct {
 }
 
 type toolAcc struct {
-	id, name string
-	args     strings.Builder
+	id, name   string
+	thoughtSig string
+	args       strings.Builder
 }
 
 // Accumulator folds a sequence of StreamEvents into a Response.
@@ -73,9 +74,16 @@ func (a *Accumulator) Add(ev StreamEvent) {
 		if ev.ToolName != "" {
 			c.name = ev.ToolName
 		}
+		if ev.Signature != "" {
+			c.thoughtSig = ev.Signature
+		}
 		c.args.WriteString(ev.ArgsDelta)
 	case StreamToolCallDelta:
-		a.call(ev.Index).args.WriteString(ev.ArgsDelta)
+		c := a.call(ev.Index)
+		if ev.Signature != "" {
+			c.thoughtSig = ev.Signature
+		}
+		c.args.WriteString(ev.ArgsDelta)
 	case StreamUsage:
 		if ev.Usage != nil {
 			if ev.Usage.InputTokens > 0 {
@@ -129,7 +137,12 @@ func (a *Accumulator) Response() *Response {
 		if args == "" {
 			args = "{}"
 		}
-		msg.ToolCalls = append(msg.ToolCalls, ToolCall{ID: c.id, Name: c.name, Arguments: json.RawMessage(args)})
+		msg.ToolCalls = append(msg.ToolCalls, ToolCall{
+			ID:               c.id,
+			Name:             c.name,
+			Arguments:        json.RawMessage(args),
+			ThoughtSignature: c.thoughtSig,
+		})
 	}
 	stop := a.stop
 	if stop == "" || (stop == StopEnd && len(msg.ToolCalls) > 0) {
@@ -174,7 +187,7 @@ func StreamResponse(resp *Response, chunkSize int) iter.Seq2[StreamEvent, error]
 			}
 		}
 		for i, call := range resp.Message.ToolCalls {
-			if !yield(StreamEvent{Type: StreamToolCallStart, Index: i, ToolCallID: call.ID, ToolName: call.Name}, nil) {
+			if !yield(StreamEvent{Type: StreamToolCallStart, Index: i, ToolCallID: call.ID, ToolName: call.Name, Signature: call.ThoughtSignature}, nil) {
 				return
 			}
 			for _, c := range chunk(string(call.Arguments), chunkSize) {

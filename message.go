@@ -47,9 +47,10 @@ func ImageDataPart(mime string, data []byte) Part {
 
 // ToolCall is a model's request to invoke a tool.
 type ToolCall struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments"`
+	ID               string          `json:"id"`
+	Name             string          `json:"name"`
+	Arguments        json.RawMessage `json:"arguments"`
+	ThoughtSignature string          `json:"thought_signature,omitempty"`
 }
 
 // Message is one entry in a conversation.

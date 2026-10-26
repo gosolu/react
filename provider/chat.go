@@ -62,14 +62,22 @@ func BuildChatCompletionsRequestBody(req *react.Request, stream bool) map[string
 			if len(m.ToolCalls) > 0 {
 				var tcs []map[string]any
 				for _, tc := range m.ToolCalls {
-					tcs = append(tcs, map[string]any{
+					tcMap := map[string]any{
 						"id":   tc.ID,
 						"type": "function",
 						"function": map[string]any{
 							"name":      tc.Name,
 							"arguments": string(tc.Arguments),
 						},
-					})
+					}
+					if tc.ThoughtSignature != "" {
+						tcMap["extra_content"] = map[string]any{
+							"google": map[string]any{
+								"thought_signature": tc.ThoughtSignature,
+							},
+						}
+					}
+					tcs = append(tcs, tcMap)
 				}
 				msgObj["tool_calls"] = tcs
 			}
@@ -108,11 +116,15 @@ func BuildChatCompletionsRequestBody(req *react.Request, stream bool) map[string
 				}
 				toolContent = parts
 			}
-			messages = append(messages, map[string]any{
+			toolMsg := map[string]any{
 				"role":         "tool",
 				"tool_call_id": m.ToolCallID,
 				"content":      toolContent,
-			})
+			}
+			if m.Name != "" {
+				toolMsg["name"] = m.Name
+			}
+			messages = append(messages, toolMsg)
 		}
 	}
 	body["messages"] = messages
@@ -221,6 +233,11 @@ type ChatCompletionResponse struct {
 					Name      string `json:"name"`
 					Arguments string `json:"arguments"`
 				} `json:"function"`
+				ExtraContent *struct {
+					Google *struct {
+						ThoughtSignature string `json:"thought_signature"`
+					} `json:"google"`
+				} `json:"extra_content"`
 			} `json:"tool_calls"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
@@ -250,6 +267,11 @@ type ChatCompletionChunk struct {
 					Name      string `json:"name"`
 					Arguments string `json:"arguments"`
 				} `json:"function"`
+				ExtraContent *struct {
+					Google *struct {
+						ThoughtSignature string `json:"thought_signature"`
+					} `json:"google"`
+				} `json:"extra_content"`
 			} `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
@@ -284,10 +306,15 @@ func ParseChatCompletionsResponse(r io.Reader) (*react.Response, error) {
 		msg.Content = []react.Part{react.TextPart(choice.Message.Content)}
 	}
 	for _, tc := range choice.Message.ToolCalls {
+		var thoughtSig string
+		if tc.ExtraContent != nil && tc.ExtraContent.Google != nil {
+			thoughtSig = tc.ExtraContent.Google.ThoughtSignature
+		}
 		msg.ToolCalls = append(msg.ToolCalls, react.ToolCall{
-			ID:        tc.ID,
-			Name:      tc.Function.Name,
-			Arguments: json.RawMessage(tc.Function.Arguments),
+			ID:               tc.ID,
+			Name:             tc.Function.Name,
+			Arguments:        json.RawMessage(tc.Function.Arguments),
+			ThoughtSignature: thoughtSig,
 		})
 	}
 	if choice.Message.ReasoningContent != "" {
@@ -299,10 +326,15 @@ func ParseChatCompletionsResponse(r io.Reader) (*react.Response, error) {
 		cached = chatResp.Usage.PromptTokensDetails.CachedTokens
 	}
 
+	stopReason := MapFinishReason(choice.FinishReason)
+	if len(msg.ToolCalls) > 0 && stopReason == react.StopEnd {
+		stopReason = react.StopToolCall
+	}
+
 	return &react.Response{
 		Message:    msg,
 		Reasoning:  choice.Message.ReasoningContent,
-		StopReason: MapFinishReason(choice.FinishReason),
+		StopReason: stopReason,
 		Usage: react.Usage{
 			InputTokens:      chatResp.Usage.PromptTokens,
 			OutputTokens:     chatResp.Usage.CompletionTokens,
@@ -391,6 +423,10 @@ func StreamChatCompletions(ctx context.Context, r io.Reader) iter.Seq2[react.Str
 			}
 			for _, tc := range choice.Delta.ToolCalls {
 				idx := tc.Index
+				var thoughtSig string
+				if tc.ExtraContent != nil && tc.ExtraContent.Google != nil {
+					thoughtSig = tc.ExtraContent.Google.ThoughtSignature
+				}
 				if !seenTools[idx] {
 					seenTools[idx] = true
 					if !yield(react.StreamEvent{
@@ -398,14 +434,16 @@ func StreamChatCompletions(ctx context.Context, r io.Reader) iter.Seq2[react.Str
 						Index:      idx,
 						ToolCallID: tc.ID,
 						ToolName:   tc.Function.Name,
+						Signature:  thoughtSig,
 						ArgsDelta:  tc.Function.Arguments,
 					}, nil) {
 						return
 					}
-				} else if tc.Function.Arguments != "" {
+				} else if tc.Function.Arguments != "" || thoughtSig != "" {
 					if !yield(react.StreamEvent{
 						Type:      react.StreamToolCallDelta,
 						Index:     idx,
+						Signature: thoughtSig,
 						ArgsDelta: tc.Function.Arguments,
 					}, nil) {
 						return
@@ -414,9 +452,13 @@ func StreamChatCompletions(ctx context.Context, r io.Reader) iter.Seq2[react.Str
 			}
 			if choice.FinishReason != "" {
 				finishedCleanly = true
+				stopReason := MapFinishReason(choice.FinishReason)
+				if len(seenTools) > 0 && stopReason == react.StopEnd {
+					stopReason = react.StopToolCall
+				}
 				if !yield(react.StreamEvent{
 					Type:       react.StreamDone,
-					StopReason: MapFinishReason(choice.FinishReason),
+					StopReason: stopReason,
 				}, nil) {
 					return
 				}

@@ -13,6 +13,7 @@ Features a unified ReAct (Reasoning + Acting) loop with support for both streami
 - **Go 1.23+ Iterators:** Streaming exposes range-over-func iterators (`iter.Seq2[Event, error]`) with cancellation on break.
 - **Zero External Dependencies:** Built 100% on the Go standard library (no third-party dependencies required). Native HTTP clients, SSE parsers, and a built-in YAML frontmatter parser for skills.
 - **Provider Abstraction:**
+  - `provider/gemini`: Google Gemini native `v1beta` API client (`generateContent` and `streamGenerateContent`), with support for thought signatures (`thoughtSignature`), tool-call finish reason mapping, parallel turn collapsing, schema sanitization, and OpenAI compatibility.
   - `provider/deepseek`: Native DeepSeek API client with vision (`deepseek-flash`), reasoning (`deepseek-reasoner` / R1), supporting both Chat Completions and Responses API (`/responses`).
   - `provider/opencode`: OpenCode Go curated model gateway with client User-Agent and session routing (`x-opencode-session`), supporting both Chat Completions and Responses API.
   - `provider/openai`: Works with OpenAI and OpenAI-compatible endpoints, supporting both standard Chat Completions and the new Responses API (`/responses`).
@@ -78,6 +79,7 @@ react/
 └── provider/                                                          # Provider abstraction and HTTP clients
     ├── anthropic/                                                # Anthropic Messages API client
     ├── deepseek/                                                 # DeepSeek API client (vision, chat, reasoner)
+    ├── gemini/                                                   # Google Gemini v1beta API client (thoughtSignature, tool calling)
     ├── mock/                                                     # Scripted mock provider for testing
     ├── opencode/                                                 # OpenCode Go gateway client (session & UA headers)
     └── openai/                                                   # OpenAI-compatible API client
@@ -406,9 +408,13 @@ mainAgent, _ := react.New(
 
 ## Running the REPL CLI
 
-The built-in CLI supports OpenAI, Anthropic, DeepSeek, OpenCode, and Mock providers with session memory:
+The built-in CLI supports OpenAI, Anthropic, DeepSeek, OpenCode, Gemini, and Mock providers with session memory:
 
 ```bash
+# Using Google Gemini (Gemini 3.8 / 4 series)
+export GEMINI_API_KEY="your-api-key"
+go run ./cmd/react --provider gemini --model gemini-3.8-flash
+
 # Using OpenAI (or compatible API)
 export OPENAI_API_KEY="your-api-key"
 go run ./cmd/react --provider openai --model gpt-4o

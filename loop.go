@@ -425,7 +425,7 @@ func (a *Agent) callModel(ctx context.Context, req *Request, stream bool, emit e
 		case StreamReasoningDelta:
 			ok = emit(Event{Type: EventReasoningDelta, Text: ev.Text})
 		case StreamToolCallStart:
-			ok = emit(Event{Type: EventToolCallStart, ToolIndex: ev.Index, ToolCall: &ToolCall{ID: ev.ToolCallID, Name: ev.ToolName}})
+			ok = emit(Event{Type: EventToolCallStart, ToolIndex: ev.Index, ToolCall: &ToolCall{ID: ev.ToolCallID, Name: ev.ToolName, ThoughtSignature: ev.Signature}})
 		case StreamToolCallDelta:
 			ok = emit(Event{Type: EventToolCallDelta, ToolIndex: ev.Index, Text: ev.ArgsDelta})
 		}
