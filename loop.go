@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -70,12 +71,40 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 	ctx = context.WithValue(ctx, depthKey{}, depth)
 	ctx = context.WithValue(ctx, emitterKey{}, emitFunc(emit))
 
+	var pending []Message
+	var flush func() error
 	finalized := false
 	finalize := func() {
 		if result == nil || finalized {
 			return
 		}
 		finalized = true
+		if flush != nil && sessionID != "" && len(pending) > 0 {
+			// Ensure any assistant message with tool calls has matching tool results before persisting.
+			for _, m := range pending {
+				if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {
+					hasResults := false
+					for _, p := range pending {
+						if p.Role == RoleTool {
+							hasResults = true
+							break
+						}
+					}
+					if !hasResults {
+						reason := "interrupted"
+						if err != nil {
+							reason = err.Error()
+						}
+						for _, tc := range m.ToolCalls {
+							pending = append(pending, ToolResultMessage(tc.ID, tc.Name, []Part{TextPart("Error: tool execution interrupted: " + reason)}, true))
+						}
+					}
+				}
+			}
+			if ferr := flush(); ferr != nil && err == nil {
+				err = ferr
+			}
+		}
 		result.RunID = rc.RunID
 		result.Usage = rb.usage()
 		result.Budget = rb.budgetUsage()
@@ -150,10 +179,10 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 	history = append(history, user)
 
 	result = &Result{RunID: rc.RunID, Messages: []Message{user}}
-	pending := []Message{user}
+	pending = []Message{user}
 	// flush persists completed turns. It uses a non-cancellable context so a
 	// finished turn is saved even if the run is cancelled right after.
-	flush := func() error {
+	flush = func() error {
 		defer func() { pending = nil }()
 		if sessionID == "" || len(pending) == 0 {
 			return nil
@@ -451,7 +480,10 @@ func (a *Agent) runTools(ctx context.Context, rc *RunContext, reg *ToolRegistry,
 		mws = append(append([]ToolMiddleware(nil), mws...), TimeoutMiddleware(a.cfg.toolTimeout))
 	}
 	exec := ChainToolMiddleware(func(ctx context.Context, call ToolCall) (ToolResult, error) {
-		t, _ := reg.Get(call.Name)
+		t, ok := reg.Get(call.Name)
+		if !ok {
+			return ErrorResult(fmt.Sprintf("Error: unknown tool %q", call.Name)), nil
+		}
 		return t.Call(ctx, call.Arguments)
 	}, mws...)
 
@@ -561,6 +593,7 @@ func (a *Agent) handleCall(ctx context.Context, rc *RunContext, reg *ToolRegistr
 	spec := t.Spec()
 
 	// 1. Apply BeforeTool hook rewrites first so policy evaluates final arguments.
+	origName := call.Name
 	origArgs := call.Arguments
 	d, err := a.hooks.BeforeTool(ctx, rc, &call)
 	if err != nil {
@@ -579,6 +612,15 @@ func (a *Agent) handleCall(ctx context.Context, rc *RunContext, reg *ToolRegistr
 			return res, err
 		}
 		return res, nil
+	}
+
+	if call.Name != origName {
+		var newOk bool
+		t, newOk = reg.Get(call.Name)
+		if !newOk {
+			return ErrorResult(fmt.Sprintf("Error: hook changed tool name to unknown tool %q", call.Name)), nil
+		}
+		spec = t.Spec()
 	}
 
 	if !bytes.Equal(call.Arguments, origArgs) {
@@ -674,19 +716,15 @@ func (a *Agent) askApproval(ctx context.Context, spec ToolSpec, call ToolCall, e
 	return a.cfg.approver.Approve(ctx, req)
 }
 
+var systemReminderRegex = regexp.MustCompile(`(?i)<\s*(/?)\s*system-reminder(\s*[^>]*)>`)
+
 // sanitizeSystemReminderTags escapes literal <system-reminder> tags in untrusted
 // user or tool content so they cannot spoof framework system reminders.
 func sanitizeSystemReminderTags(s string) string {
 	if !strings.Contains(strings.ToLower(s), "system-reminder") {
 		return s
 	}
-	r := strings.NewReplacer(
-		"<system-reminder>", "&lt;system-reminder&gt;",
-		"</system-reminder>", "&lt;/system-reminder&gt;",
-		"<SYSTEM-REMINDER>", "&lt;SYSTEM-REMINDER&gt;",
-		"</SYSTEM-REMINDER>", "&lt;/SYSTEM-REMINDER&gt;",
-	)
-	return r.Replace(s)
+	return systemReminderRegex.ReplaceAllString(s, "&lt;$1system-reminder$2&gt;")
 }
 
 // redactSecrets masks sensitive fields in JSON arguments before logging.

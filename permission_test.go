@@ -251,6 +251,135 @@ func TestStructuredPermissionMatchingShellMetacharacters(t *testing.T) {
 		}
 	})
 
+	t.Run("PathCanonicalizationAndTraversalBlocked", func(t *testing.T) {
+		writeSpec := ToolSpec{
+			Name:        "write_file",
+			Description: "Write file contents",
+			Annotations: ToolAnnotations{Destructive: true},
+		}
+
+		// 1. Allow rule for /tmp/** should NOT match traversed path /tmp/../etc/passwd
+		allowTmp := PermissionRules{
+			Allow: []string{"write_file(path:/tmp/**)"},
+		}
+		traversalCall := ToolCall{
+			Name:      "write_file",
+			Arguments: json.RawMessage(`{"path":"/tmp/../etc/passwd","content":"evil"}`),
+		}
+		if dec := allowTmp.Check(ctx, writeSpec, traversalCall); dec == PolicyAllow {
+			t.Errorf("expected traversed /tmp/../etc/passwd to NOT be PolicyAllow under write_file(path:/tmp/**), got %s", dec)
+		}
+
+		// 2. Deny rule for /etc/** MUST catch traversed path /tmp/../etc/passwd
+		denyEtc := PermissionRules{
+			Deny: []string{"write_file(path:/etc/**)"},
+		}
+		if dec := denyEtc.Check(ctx, writeSpec, traversalCall); dec != PolicyDeny {
+			t.Errorf("expected traversed /tmp/../etc/passwd to be PolicyDeny under write_file(path:/etc/**), got %s", dec)
+		}
+
+		// 3. Deny rule for /etc/** MUST catch double-slash path //etc/passwd
+		doubleSlashCall := ToolCall{
+			Name:      "write_file",
+			Arguments: json.RawMessage(`{"path":"//etc/passwd","content":"evil"}`),
+		}
+		if dec := denyEtc.Check(ctx, writeSpec, doubleSlashCall); dec != PolicyDeny {
+			t.Errorf("expected double-slash path //etc/passwd to be PolicyDeny under write_file(path:/etc/**), got %s", dec)
+		}
+
+		// 4. Deny rule for /etc/* MUST catch dot-relative path /etc/./passwd
+		dotSlashCall := ToolCall{
+			Name:      "write_file",
+			Arguments: json.RawMessage(`{"path":"/etc/./passwd","content":"evil"}`),
+		}
+		denyEtcSingle := PermissionRules{
+			Deny: []string{"write_file(path:/etc/*)"},
+		}
+		if dec := denyEtcSingle.Check(ctx, writeSpec, dotSlashCall); dec != PolicyDeny {
+			t.Errorf("expected dot-relative path /etc/./passwd to be PolicyDeny under write_file(path:/etc/*), got %s", dec)
+		}
+	})
+
+	t.Run("UnscopedArgumentMatchingSmugglingBlocked", func(t *testing.T) {
+		writeSpec := ToolSpec{
+			Name:        "write_file",
+			Description: "Write file contents",
+			Annotations: ToolAnnotations{Destructive: true},
+		}
+		copySpec := ToolSpec{
+			Name:        "copy_file",
+			Description: "Copy file",
+			Annotations: ToolAnnotations{Destructive: true},
+		}
+
+		// Unscoped pattern write_file(/tmp/*) with content containing /tmp/x must NOT allow writing to /etc/passwd
+		rules := PermissionRules{
+			Allow: []string{"write_file(/tmp/*)"},
+		}
+		smuggledCall := ToolCall{
+			Name:      "write_file",
+			Arguments: json.RawMessage(`{"path":"/etc/passwd","content":"/tmp/x"}`),
+		}
+		if dec := rules.Check(ctx, writeSpec, smuggledCall); dec == PolicyAllow {
+			t.Errorf("expected smuggled content argument to NOT allow write_file to /etc/passwd, got %s", dec)
+		}
+
+		// Legitimate call where path matches /tmp/* is allowed
+		validCall := ToolCall{
+			Name:      "write_file",
+			Arguments: json.RawMessage(`{"path":"/tmp/test.txt","content":"hello world"}`),
+		}
+		if dec := rules.Check(ctx, writeSpec, validCall); dec != PolicyAllow {
+			t.Errorf("expected write_file(/tmp/test.txt) to be PolicyAllow, got %s", dec)
+		}
+
+		// Multiple target fields (source and destination): both must match
+		copyRules := PermissionRules{
+			Allow: []string{"copy_file(/tmp/*)"},
+		}
+		halfValidCopy := ToolCall{
+			Name:      "copy_file",
+			Arguments: json.RawMessage(`{"source":"/tmp/a","destination":"/etc/shadow"}`),
+		}
+		if dec := copyRules.Check(ctx, copySpec, halfValidCopy); dec == PolicyAllow {
+			t.Errorf("expected copy_file to /etc/shadow to NOT be PolicyAllow, got %s", dec)
+		}
+
+		allValidCopy := ToolCall{
+			Name:      "copy_file",
+			Arguments: json.RawMessage(`{"source":"/tmp/a","destination":"/tmp/b"}`),
+		}
+		if dec := copyRules.Check(ctx, copySpec, allValidCopy); dec != PolicyAllow {
+			t.Errorf("expected copy_file within /tmp to be PolicyAllow, got %s", dec)
+		}
+	})
+
+	t.Run("GitDangerousFlagsBlockedUnderColonForm", func(t *testing.T) {
+		rules := PermissionRules{
+			Allow: []string{"Bash(git:*)"},
+		}
+
+		dangerousGitCommands := []string{
+			"git -c alias.x=!id x",
+			"git -c core.editor=calc.exe commit",
+			"git -c core.pager=sh",
+			"git --config-env=foo=bar status",
+			"git --exec-path=/tmp status",
+			"git --upload-pack=/tmp/evil fetch",
+			"git status !evil",
+		}
+
+		for _, cmd := range dangerousGitCommands {
+			call := ToolCall{
+				Name:      "Bash",
+				Arguments: json.RawMessage(`{"command":"` + cmd + `"}`),
+			}
+			if dec := rules.Check(ctx, bashSpec, call); dec == PolicyAllow {
+				t.Errorf("expected dangerous git command %q to NOT be PolicyAllow, got %s", cmd, dec)
+			}
+		}
+	})
+
 	t.Run("StrictPermissionPolicyDefaultsUnannotatedToAsk", func(t *testing.T) {
 		policy := StrictPermissionPolicy()
 		unannotated := ToolSpec{Name: "mutate_db", Description: "Unannotated mutating tool"}

@@ -47,15 +47,12 @@ func AllowAllPermissionPolicy() PermissionPolicy {
 	return PermissionPolicyFunc(func(context.Context, ToolSpec, ToolCall) PolicyDecision { return PolicyAllow })
 }
 
-// DefaultPermissionPolicy allows read-only and unannotated tools, pre-approves
-// non-destructive tools allowed by active skills, and asks for Destructive ones.
+// DefaultPermissionPolicy allows read-only and unannotated tools, and asks for Destructive ones
+// (which can never be pre-approved by active skills).
 func DefaultPermissionPolicy() PermissionPolicy {
 	return PermissionPolicyFunc(func(ctx context.Context, s ToolSpec, c ToolCall) PolicyDecision {
 		if s.Annotations.Destructive {
 			return PolicyAsk
-		}
-		if matchRules(ActiveSkillAllowedTools(ctx), s, c) {
-			return PolicyAllow
 		}
 		return PolicyAllow
 	})
@@ -116,8 +113,8 @@ func matchRules(patterns []string, s ToolSpec, c ToolCall) bool {
 
 // shellBlockedChars defines characters prohibited in shell commands to prevent
 // command chaining, redirection, parameter/command expansion, quoting bypasses,
-// subshell spawning, globbing, and newline-separated command execution.
-const shellBlockedChars = ";|&><$`\n\r\"'\\(){}*?"
+// subshell spawning, globbing, history expansion, and newline-separated command execution.
+const shellBlockedChars = ";|&><$`\n\r\"'\\(){}*?!"
 
 func isShellTool(name string) bool {
 	switch strings.ToLower(name) {
@@ -201,6 +198,20 @@ func matchShellCommand(argPattern, cmdVal string) bool {
 				return false
 			}
 		}
+
+		// Block dangerous flags for known prefix tools that can execute arbitrary
+		// commands or override system configuration (e.g. git -c, --config, --exec-path).
+		if prefixTokens[0] == "git" {
+			for _, tok := range cmdTokens {
+				if tok == "-c" || strings.HasPrefix(tok, "-c") ||
+					strings.HasPrefix(tok, "--config") ||
+					strings.HasPrefix(tok, "--exec-path") ||
+					strings.HasPrefix(tok, "--upload-pack") {
+					return false
+				}
+			}
+		}
+
 		return true
 	}
 
@@ -223,6 +234,13 @@ func matchShellCommand(argPattern, cmdVal string) bool {
 	return true
 }
 
+// targetFields lists common parameter names that identify the target resource of a tool call.
+var targetFields = []string{
+	"path", "file", "filepath", "filename", "dir", "directory",
+	"target", "destination", "dest", "source", "src",
+	"uri", "url", "recipient", "to", "from", "address",
+}
+
 func matchStructuredArgs(argPattern string, argMap map[string]any) bool {
 	if field, valPat, ok := strings.Cut(argPattern, ":"); ok {
 		field = strings.TrimSpace(field)
@@ -239,14 +257,44 @@ func matchStructuredArgs(argPattern string, argMap map[string]any) bool {
 		return false
 	}
 
-	for _, v := range argMap {
-		if strVal, ok := v.(string); ok {
-			if matchGlob(argPattern, strVal) {
-				return true
+	// For unscoped patterns without a field name (e.g. "write_file(/tmp/*)"):
+	// 1. If known target/resource fields exist, evaluate ONLY those fields.
+	//    Every present target field must match (e.g. for copy, both source & destination).
+	//    Payload fields like "content", "data", or "body" are ignored so an attacker cannot
+	//    smuggle an allowed path into the content to bypass restrictions.
+	var matchedTarget bool
+	for _, f := range targetFields {
+		if val, exists := argMap[f]; exists {
+			matchedTarget = true
+			if !matchGlob(argPattern, fmt.Sprint(val)) {
+				return false
 			}
 		}
 	}
-	return false
+	if matchedTarget {
+		return true
+	}
+
+	// 2. If no target field exists:
+	// If there is only 1 field in argMap, match that single field.
+	if len(argMap) == 1 {
+		for _, v := range argMap {
+			return matchGlob(argPattern, fmt.Sprint(v))
+		}
+	}
+
+	// If there are multiple fields and no recognized target field,
+	// require all string fields to match to prevent argument smuggling.
+	hasString := false
+	for _, v := range argMap {
+		if strVal, ok := v.(string); ok {
+			hasString = true
+			if !matchGlob(argPattern, strVal) {
+				return false
+			}
+		}
+	}
+	return hasString
 }
 
 func match(patterns []string, name string) bool {
@@ -258,24 +306,55 @@ func match(patterns []string, name string) bool {
 	return false
 }
 
+func cleanPath(p string) string {
+	if !strings.Contains(p, "/") && !strings.Contains(p, "\\") {
+		return p
+	}
+	p = strings.ReplaceAll(p, "\\", "/")
+	hasDoubleStar := strings.HasSuffix(p, "/**")
+	hasSingleStar := strings.HasSuffix(p, "/*")
+	cleaned := path.Clean(p)
+	if hasDoubleStar && !strings.HasSuffix(cleaned, "/**") {
+		cleaned = strings.TrimSuffix(cleaned, "/*") + "/**"
+	} else if hasSingleStar && !strings.HasSuffix(cleaned, "/*") && !strings.HasSuffix(cleaned, "/**") {
+		cleaned = cleaned + "/*"
+	}
+	return cleaned
+}
+
 func matchGlob(pattern, value string) bool {
 	if pattern == "*" || pattern == "**" || pattern == value {
 		return true
 	}
+
+	isPath := strings.Contains(pattern, "/") || strings.Contains(value, "/") ||
+		strings.Contains(pattern, "\\") || strings.Contains(value, "\\")
+	if isPath {
+		cPattern := cleanPath(pattern)
+		cValue := cleanPath(value)
+		if cPattern == "*" || cPattern == "**" || cPattern == cValue {
+			return true
+		}
+		if ok, err := path.Match(cPattern, cValue); err == nil && ok {
+			return true
+		}
+		if strings.HasSuffix(cPattern, "/**") {
+			prefix := strings.TrimSuffix(cPattern, "/**")
+			if cValue == prefix || strings.HasPrefix(cValue, prefix+"/") {
+				return true
+			}
+		}
+		if strings.HasSuffix(cPattern, "/*") {
+			prefix := strings.TrimSuffix(cPattern, "/*")
+			if strings.HasPrefix(cValue, prefix+"/") {
+				return true
+			}
+		}
+		return false
+	}
+
 	if ok, err := path.Match(pattern, value); err == nil && ok {
 		return true
-	}
-	if strings.HasSuffix(pattern, "/**") {
-		prefix := strings.TrimSuffix(pattern, "/**")
-		if value == prefix || strings.HasPrefix(value, prefix+"/") {
-			return true
-		}
-	}
-	if strings.HasSuffix(pattern, "/*") {
-		prefix := strings.TrimSuffix(pattern, "/*")
-		if strings.HasPrefix(value, prefix+"/") {
-			return true
-		}
 	}
 	return false
 }

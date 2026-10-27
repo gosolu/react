@@ -1,6 +1,6 @@
 // Package gemini implements a Google Gemini react.Provider.
-// It supports native Gemini v1beta generateContent and streamGenerateContent API,
-// as well as OpenAI-compatible Chat Completions mode when configured.
+// It supports the new standard Gemini Interactions API (/v1beta/interactions) by default,
+// as well as the legacy native generateContent API when explicitly configured.
 package gemini
 
 import (
@@ -25,16 +25,19 @@ const DefaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
 
 // Latest Google Gemini model identifiers.
 const (
-	ModelGemini4Argon  = "gemini-4-argon"
-	ModelGemini4Flash  = "gemini-4-flash"
-	ModelGemini38Flash = "gemini-3.8-flash"
+	ModelGemini4Argon      = "gemini-4-argon"
+	ModelGemini4Flash      = "gemini-4-flash"
+	ModelGemini38Flash     = "gemini-3.8-flash"
+	ModelGeminiFlashLatest = "gemini-flash-latest"
+	ModelGeminiProLatest   = "gemini-pro-latest"
+	ModelGeminiFlashLite   = "gemini-flash-lite-latest"
 )
 
 // Config configures the Gemini provider.
 type Config struct {
 	APIKey      string
 	BaseURL     string           // defaults to DefaultBaseURL
-	APIType     provider.APIType // defaults to native Gemini API; or provider.APITypeChatCompletions
+	APIType     provider.APIType // defaults to Interactions API; or provider.APITypeGenerateContent
 	HTTPClient  *http.Client     // defaults to http.DefaultClient
 	RetryPolicy provider.RetryPolicy
 	ExtraHeader map[string]string
@@ -45,19 +48,36 @@ type Provider struct {
 	cfg Config
 }
 
-// New creates a new Gemini provider using native generateContent API.
+// New creates a new Gemini provider. By default, it uses the modern Gemini Interactions API (/v1beta/interactions).
 func New(cfg Config) *Provider {
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = DefaultBaseURL
 	}
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
+	if cfg.APIType == "" || cfg.APIType == provider.APITypeChatCompletions {
+		cfg.APIType = provider.APITypeInteractions
+	}
 	return &Provider{cfg: cfg}
 }
 
-// NewChatCompletions creates a new Gemini provider configured to use the
-// OpenAI-compatible Chat Completions endpoint (/openai/chat/completions).
+// NewInteractions creates a new Gemini provider configured to use the
+// Gemini Interactions API (/v1beta/interactions).
+func NewInteractions(cfg Config) *Provider {
+	cfg.APIType = provider.APITypeInteractions
+	return New(cfg)
+}
+
+// NewChatCompletions creates a Gemini provider. Note that the Gemini API no longer
+// supports OpenAI-compatible Chat Completions, so this switches directly to the Interactions API.
 func NewChatCompletions(cfg Config) *Provider {
-	cfg.APIType = provider.APITypeChatCompletions
+	cfg.APIType = provider.APITypeInteractions
+	return New(cfg)
+}
+
+// NewGenerateContent creates a new Gemini provider explicitly configured to use
+// the legacy native generateContent API (/models/{model}:generateContent).
+func NewGenerateContent(cfg Config) *Provider {
+	cfg.APIType = provider.APITypeGenerateContent
 	return New(cfg)
 }
 
@@ -68,18 +88,18 @@ func (p *Provider) Name() string {
 
 // Generate implements react.Provider (non-streaming).
 func (p *Provider) Generate(ctx context.Context, req *react.Request) (*react.Response, error) {
-	if p.cfg.APIType == provider.APITypeChatCompletions {
-		return p.generateChatCompletions(ctx, req)
+	if p.cfg.APIType == provider.APITypeGenerateContent {
+		return p.generateNative(ctx, req)
 	}
-	return p.generateNative(ctx, req)
+	return p.generateInteractions(ctx, req)
 }
 
 // Stream implements react.Provider (server-sent events).
 func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[react.StreamEvent, error] {
-	if p.cfg.APIType == provider.APITypeChatCompletions {
-		return p.streamChatCompletions(ctx, req)
+	if p.cfg.APIType == provider.APITypeGenerateContent {
+		return p.streamNative(ctx, req)
 	}
-	return p.streamNative(ctx, req)
+	return p.streamInteractions(ctx, req)
 }
 
 func (p *Provider) generateChatCompletions(ctx context.Context, req *react.Request) (*react.Response, error) {
@@ -360,10 +380,10 @@ func (p *Provider) streamNative(ctx context.Context, req *react.Request) iter.Se
 						return
 					}
 					if !yield(react.StreamEvent{
-						Type:       react.StreamToolCallDelta,
-						Index:      idx,
-						Signature:  part.ThoughtSignature,
-						ArgsDelta:  string(args),
+						Type:      react.StreamToolCallDelta,
+						Index:     idx,
+						Signature: part.ThoughtSignature,
+						ArgsDelta: string(args),
 					}, nil) {
 						return
 					}
@@ -425,6 +445,743 @@ func (p *Provider) chatCompletionsURL() string {
 	baseURL := strings.TrimSuffix(p.cfg.BaseURL, "/chat/completions")
 	baseURL = strings.TrimSuffix(baseURL, "/openai")
 	return baseURL + "/openai/chat/completions"
+}
+
+func (p *Provider) interactionsEndpointURL() string {
+	baseURL := p.cfg.BaseURL
+	baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
+	baseURL = strings.TrimSuffix(baseURL, "/openai")
+	baseURL = strings.TrimSuffix(baseURL, "/interactions")
+	return baseURL + "/interactions"
+}
+
+func (p *Provider) generateInteractions(ctx context.Context, req *react.Request) (*react.Response, error) {
+	bodyMap, err := p.buildInteractionsRequestBody(req, false)
+	if err != nil {
+		return nil, fmt.Errorf("gemini: build interactions request: %w", err)
+	}
+	data, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, fmt.Errorf("gemini: marshal request: %w", err)
+	}
+
+	endpoint := p.interactionsEndpointURL()
+	resp, err := p.cfg.RetryPolicy.Do(ctx, p.cfg.HTTPClient, p.Name(), func(c context.Context) (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(c, http.MethodPost, endpoint, bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		p.setHeaders(httpReq)
+		return httpReq, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var wire interactionResponseWire
+	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+		return nil, fmt.Errorf("gemini: decode interaction response: %w", err)
+	}
+
+	if wire.Error != nil && wire.Error.Message != "" {
+		return nil, fmt.Errorf("gemini api error: %s (code %v)", wire.Error.Message, wire.Error.Code)
+	}
+	if len(wire.Errors) > 0 && wire.Errors[0].Message != "" {
+		return nil, fmt.Errorf("gemini api error: %s (code %s)", wire.Errors[0].Message, wire.Errors[0].Code)
+	}
+
+	msg := react.Message{
+		Role: react.RoleAssistant,
+	}
+
+	for _, step := range wire.Steps {
+		switch step.Type {
+		case "thought":
+			msg.Reasoning += step.Text
+			if step.Signature != "" {
+				msg.ReasoningSignature = step.Signature
+			}
+		case "function_call":
+			args := step.Arguments
+			if len(args) == 0 {
+				args = json.RawMessage("{}")
+			}
+			msg.ToolCalls = append(msg.ToolCalls, react.ToolCall{
+				ID:               step.ID,
+				Name:             step.Name,
+				Arguments:        args,
+				ThoughtSignature: step.Signature,
+			})
+		case "model_output":
+			for _, c := range step.Content {
+				switch c.Type {
+				case "text":
+					if c.Text != "" {
+						msg.Content = append(msg.Content, react.TextPart(c.Text))
+					}
+				case "image":
+					if c.Data != "" {
+						decoded, err := base64.StdEncoding.DecodeString(c.Data)
+						if err == nil {
+							msg.Content = append(msg.Content, react.ImageDataPart(c.MIMEType, decoded))
+						}
+					} else if c.URI != "" {
+						msg.Content = append(msg.Content, react.ImageURLPart(c.URI))
+					}
+				case "thought":
+					msg.Reasoning += c.Text
+				}
+			}
+		default:
+			if step.Text != "" && step.Type != "user_input" && step.Type != "function_result" {
+				msg.Content = append(msg.Content, react.TextPart(step.Text))
+			}
+		}
+	}
+
+	stopReason := react.StopEnd
+	if len(msg.ToolCalls) > 0 || wire.Status == "requires_action" {
+		stopReason = react.StopToolCall
+	} else {
+		switch wire.Status {
+		case "completed":
+			stopReason = react.StopEnd
+		case "incomplete":
+			stopReason = react.StopLength
+		case "failed", "cancelled":
+			stopReason = react.StopContentFilter
+		default:
+			stopReason = react.StopEnd
+		}
+	}
+
+	var usage react.Usage
+	if wire.Usage != nil {
+		usage.InputTokens = wire.Usage.TotalInputTokens
+		usage.OutputTokens = wire.Usage.TotalOutputTokens + wire.Usage.TotalThoughtTokens
+		usage.CacheReadTokens = wire.Usage.TotalCachedTokens
+	}
+
+	return &react.Response{
+		Message:    msg,
+		Reasoning:  msg.Reasoning,
+		StopReason: stopReason,
+		Usage:      usage,
+	}, nil
+}
+
+func (p *Provider) streamInteractions(ctx context.Context, req *react.Request) iter.Seq2[react.StreamEvent, error] {
+	return func(yield func(react.StreamEvent, error) bool) {
+		bodyMap, err := p.buildInteractionsRequestBody(req, true)
+		if err != nil {
+			yield(react.StreamEvent{}, fmt.Errorf("gemini: build interactions request: %w", err))
+			return
+		}
+		data, err := json.Marshal(bodyMap)
+		if err != nil {
+			yield(react.StreamEvent{}, fmt.Errorf("gemini: marshal request: %w", err))
+			return
+		}
+
+		endpoint := p.interactionsEndpointURL()
+		resp, err := p.cfg.RetryPolicy.Do(ctx, p.cfg.HTTPClient, p.Name(), func(c context.Context) (*http.Request, error) {
+			httpReq, err := http.NewRequestWithContext(c, http.MethodPost, endpoint, bytes.NewReader(data))
+			if err != nil {
+				return nil, err
+			}
+			p.setHeaders(httpReq)
+			httpReq.Header.Set("Accept", "text/event-stream")
+			return httpReq, nil
+		})
+		if err != nil {
+			yield(react.StreamEvent{}, err)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		var toolCallSeen bool
+		var toolCallIndex int
+		var finishedCleanly bool
+		var textSeen bool
+
+		for sse, sseErr := range provider.ReadSSE(resp.Body) {
+			if sseErr != nil {
+				if sseErr != io.EOF && ctx.Err() == nil {
+					yield(react.StreamEvent{}, sseErr)
+				}
+				return
+			}
+			if sse.Data == "[DONE]" {
+				return
+			}
+
+			// Mid-stream error check
+			if sse.Event == "error" || strings.Contains(sse.Data, `"error"`) {
+				var errPayload struct {
+					Error *struct {
+						Message string `json:"message"`
+						Code    any    `json:"code"`
+						Status  string `json:"status"`
+					} `json:"error"`
+					Errors []struct {
+						Code    string `json:"code"`
+						Message string `json:"message"`
+					} `json:"errors"`
+				}
+				if json.Unmarshal([]byte(sse.Data), &errPayload) == nil {
+					if errPayload.Error != nil && errPayload.Error.Message != "" {
+						yield(react.StreamEvent{}, fmt.Errorf("gemini stream error: %s (code %v)", errPayload.Error.Message, errPayload.Error.Code))
+						return
+					}
+					if len(errPayload.Errors) > 0 && errPayload.Errors[0].Message != "" {
+						yield(react.StreamEvent{}, fmt.Errorf("gemini stream error: %s (code %s)", errPayload.Errors[0].Message, errPayload.Errors[0].Code))
+						return
+					}
+				}
+				if sse.Event == "error" {
+					yield(react.StreamEvent{}, fmt.Errorf("gemini stream error: %s", sse.Data))
+					return
+				}
+			}
+
+			var eventWire interactionStreamEventWire
+			if err := json.Unmarshal([]byte(sse.Data), &eventWire); err != nil {
+				if s := strings.TrimSpace(sse.Data); s != "" && !strings.HasPrefix(s, ":") {
+					yield(react.StreamEvent{}, fmt.Errorf("gemini stream invalid json: %w: %s", err, s))
+					return
+				}
+				continue
+			}
+
+			eventType := sse.Event
+			if eventType == "" || eventType == "message" {
+				eventType = eventWire.Type
+				if eventType == "" {
+					eventType = eventWire.EventType
+				}
+			}
+
+			switch eventType {
+			case "step.start":
+				if eventWire.Step != nil && eventWire.Step.Type == "function_call" {
+					toolCallSeen = true
+					idx := toolCallIndex
+					toolCallIndex++
+					if !yield(react.StreamEvent{
+						Type:       react.StreamToolCallStart,
+						Index:      idx,
+						ToolCallID: eventWire.Step.ID,
+						ToolName:   eventWire.Step.Name,
+						Signature:  eventWire.Step.Signature,
+					}, nil) {
+						return
+					}
+				}
+
+			case "step.delta":
+				if eventWire.Delta != nil {
+					d := eventWire.Delta
+					switch d.Type {
+					case "text":
+						if d.Text != "" {
+							textSeen = true
+							if !yield(react.StreamEvent{
+								Type: react.StreamTextDelta,
+								Text: d.Text,
+							}, nil) {
+								return
+							}
+						}
+					case "thought":
+						if d.Text != "" || d.Signature != "" {
+							if !yield(react.StreamEvent{
+								Type:      react.StreamReasoningDelta,
+								Text:      d.Text,
+								Signature: d.Signature,
+							}, nil) {
+								return
+							}
+						}
+					case "thought_signature":
+						if d.Signature != "" {
+							if !yield(react.StreamEvent{
+								Type:      react.StreamReasoningDelta,
+								Signature: d.Signature,
+							}, nil) {
+								return
+							}
+						}
+					case "arguments", "arguments_delta":
+						argsDelta := d.Arguments
+						if argsDelta == "" {
+							argsDelta = d.PartialArguments
+						}
+						idx := toolCallIndex - 1
+						if idx < 0 {
+							idx = 0
+						}
+						if !yield(react.StreamEvent{
+							Type:      react.StreamToolCallDelta,
+							Index:     idx,
+							ArgsDelta: argsDelta,
+							Signature: d.Signature,
+						}, nil) {
+							return
+						}
+					}
+				}
+
+				if eventWire.Metadata != nil && eventWire.Metadata.TotalUsage != nil {
+					u := react.Usage{
+						InputTokens:     eventWire.Metadata.TotalUsage.TotalInputTokens,
+						OutputTokens:    eventWire.Metadata.TotalUsage.TotalOutputTokens + eventWire.Metadata.TotalUsage.TotalThoughtTokens,
+						CacheReadTokens: eventWire.Metadata.TotalUsage.TotalCachedTokens,
+					}
+					if !yield(react.StreamEvent{Type: react.StreamUsage, Usage: &u}, nil) {
+						return
+					}
+				}
+
+			case "interaction.status_update":
+				if eventWire.Usage != nil {
+					u := react.Usage{
+						InputTokens:     eventWire.Usage.TotalInputTokens,
+						OutputTokens:    eventWire.Usage.TotalOutputTokens + eventWire.Usage.TotalThoughtTokens,
+						CacheReadTokens: eventWire.Usage.TotalCachedTokens,
+					}
+					if !yield(react.StreamEvent{Type: react.StreamUsage, Usage: &u}, nil) {
+						return
+					}
+				}
+				if eventWire.Status == "requires_action" {
+					finishedCleanly = true
+					if !yield(react.StreamEvent{
+						Type:       react.StreamDone,
+						StopReason: react.StopToolCall,
+					}, nil) {
+						return
+					}
+				} else if eventWire.Status == "completed" {
+					finishedCleanly = true
+					stopReason := react.StopEnd
+					if toolCallSeen {
+						stopReason = react.StopToolCall
+					}
+					if !yield(react.StreamEvent{
+						Type:       react.StreamDone,
+						StopReason: stopReason,
+					}, nil) {
+						return
+					}
+				}
+
+			case "interaction.requires_action":
+				finishedCleanly = true
+				if !yield(react.StreamEvent{
+					Type:       react.StreamDone,
+					StopReason: react.StopToolCall,
+				}, nil) {
+					return
+				}
+
+			case "interaction.completed":
+				finishedCleanly = true
+				if eventWire.Interaction != nil && eventWire.Interaction.Usage != nil {
+					u := react.Usage{
+						InputTokens:     eventWire.Interaction.Usage.TotalInputTokens,
+						OutputTokens:    eventWire.Interaction.Usage.TotalOutputTokens + eventWire.Interaction.Usage.TotalThoughtTokens,
+						CacheReadTokens: eventWire.Interaction.Usage.TotalCachedTokens,
+					}
+					if !yield(react.StreamEvent{Type: react.StreamUsage, Usage: &u}, nil) {
+						return
+					}
+				}
+				stopReason := react.StopEnd
+				if toolCallSeen {
+					stopReason = react.StopToolCall
+				}
+				if !yield(react.StreamEvent{
+					Type:       react.StreamDone,
+					StopReason: stopReason,
+				}, nil) {
+					return
+				}
+			}
+		}
+
+		if !finishedCleanly && ctx.Err() == nil {
+			if toolCallSeen {
+				yield(react.StreamEvent{
+					Type:       react.StreamDone,
+					StopReason: react.StopToolCall,
+				}, nil)
+			} else if textSeen {
+				yield(react.StreamEvent{
+					Type:       react.StreamDone,
+					StopReason: react.StopEnd,
+				}, nil)
+			} else {
+				yield(react.StreamEvent{}, io.ErrUnexpectedEOF)
+			}
+		}
+	}
+}
+
+func (p *Provider) buildInteractionsRequestBody(req *react.Request, stream bool) (map[string]any, error) {
+	body := make(map[string]any)
+	maps.Copy(body, req.Extra)
+
+	// Model
+	model := req.Model
+	if model == "" {
+		model = ModelGeminiFlashLatest
+	}
+	model = strings.TrimPrefix(model, "models/")
+	body["model"] = model
+
+	// Agent override: if agent is explicitly provided in Extra and model wasn't set in Request
+	if agent, ok := body["agent"].(string); ok && agent != "" && req.Model == "" {
+		delete(body, "model")
+	}
+
+	if stream {
+		body["stream"] = true
+	}
+
+	// 1. System instructions
+	var systemParts []string
+	if req.System != "" {
+		systemParts = append(systemParts, req.System)
+	}
+	for _, m := range req.Messages {
+		if m.Role == react.RoleSystem {
+			systemParts = append(systemParts, m.Text())
+		}
+	}
+	if len(systemParts) > 0 {
+		body["system_instruction"] = strings.Join(systemParts, "\n\n")
+	}
+
+	// 2. Generation config
+	genConfig := make(map[string]any)
+	if existing, ok := body["generation_config"].(map[string]any); ok {
+		maps.Copy(genConfig, existing)
+	}
+	if req.MaxTokens > 0 {
+		genConfig["max_output_tokens"] = req.MaxTokens
+	}
+	if req.Temperature != nil {
+		genConfig["temperature"] = *req.Temperature
+	}
+	if req.ToolChoice != "" {
+		switch req.ToolChoice {
+		case react.ToolChoiceAuto:
+			genConfig["tool_choice"] = "auto"
+		case react.ToolChoiceNone:
+			genConfig["tool_choice"] = "none"
+		case react.ToolChoiceRequired:
+			genConfig["tool_choice"] = "any"
+		default:
+			genConfig["tool_choice"] = map[string]any{
+				"allowed_tools": map[string]any{
+					"mode":  "any",
+					"tools": []string{req.ToolChoice},
+				},
+			}
+		}
+	}
+	if len(genConfig) > 0 {
+		body["generation_config"] = genConfig
+	}
+
+	// 3. Map tool call IDs to tool names
+	toolNamesByID := make(map[string]string)
+	for _, m := range req.Messages {
+		if m.Role == react.RoleAssistant {
+			for _, tc := range m.ToolCalls {
+				if tc.ID != "" && tc.Name != "" {
+					toolNamesByID[tc.ID] = tc.Name
+				}
+			}
+		}
+	}
+
+	// 4. Build input
+	var nonSystem []react.Message
+	for _, m := range req.Messages {
+		if m.Role != react.RoleSystem {
+			nonSystem = append(nonSystem, m)
+		}
+	}
+
+	_, hasPrevID := body["previous_interaction_id"]
+
+	if !hasPrevID && len(nonSystem) == 1 && nonSystem[0].Role == react.RoleUser {
+		userMsg := nonSystem[0]
+		content := buildInteractionsContent(userMsg)
+		if len(content) == 1 && content[0]["type"] == "text" {
+			body["input"] = content[0]["text"]
+		} else if len(content) > 0 {
+			body["input"] = content
+		} else {
+			body["input"] = userMsg.Text()
+		}
+	} else {
+		var targetMsgs []react.Message
+		if hasPrevID && len(nonSystem) > 0 {
+			targetMsgs = extractLatestTurn(nonSystem)
+		} else {
+			targetMsgs = nonSystem
+		}
+
+		var steps []map[string]any
+		for _, m := range targetMsgs {
+			switch m.Role {
+			case react.RoleUser:
+				content := buildInteractionsContent(m)
+				steps = append(steps, map[string]any{
+					"type":    "user_input",
+					"content": content,
+				})
+
+			case react.RoleAssistant:
+				content := buildInteractionsContent(m)
+				if len(content) > 0 {
+					steps = append(steps, map[string]any{
+						"type":    "model_output",
+						"content": content,
+					})
+				}
+				for _, tc := range m.ToolCalls {
+					var parsedArgs any
+					if len(tc.Arguments) > 0 {
+						_ = json.Unmarshal(tc.Arguments, &parsedArgs)
+					}
+					if parsedArgs == nil {
+						parsedArgs = map[string]any{}
+					}
+					fcStep := map[string]any{
+						"type":      "function_call",
+						"id":        tc.ID,
+						"name":      tc.Name,
+						"arguments": parsedArgs,
+					}
+					if tc.ThoughtSignature != "" {
+						fcStep["signature"] = tc.ThoughtSignature
+					}
+					steps = append(steps, fcStep)
+				}
+
+			case react.RoleTool:
+				toolName := m.Name
+				if toolName == "" && m.ToolCallID != "" {
+					toolName = toolNamesByID[m.ToolCallID]
+				}
+				if toolName == "" {
+					toolName = m.ToolCallID
+				}
+				resContent := buildInteractionsContent(m)
+				if len(resContent) == 0 {
+					resContent = []map[string]any{{"type": "text", "text": m.Text()}}
+				}
+				frStep := map[string]any{
+					"type":    "function_result",
+					"call_id": m.ToolCallID,
+					"name":    toolName,
+					"result":  resContent,
+				}
+				if m.IsError {
+					frStep["is_error"] = true
+				}
+				steps = append(steps, frStep)
+			}
+		}
+		body["input"] = steps
+	}
+
+	// 5. Tools
+	var tools []map[string]any
+	if existingTools, ok := body["tools"].([]any); ok {
+		for _, et := range existingTools {
+			if m, ok := et.(map[string]any); ok {
+				tools = append(tools, m)
+			}
+		}
+	} else if existingTools, ok := body["tools"].([]map[string]any); ok {
+		tools = append(tools, existingTools...)
+	}
+
+	for _, t := range req.Tools {
+		toolDef := map[string]any{
+			"type":        "function",
+			"name":        t.Name,
+			"description": t.Description,
+		}
+		if len(t.InputSchema) > 0 {
+			var schema map[string]any
+			if err := json.Unmarshal(t.InputSchema, &schema); err == nil {
+				cleanGeminiSchema(schema)
+				if len(schema) > 0 {
+					toolDef["parameters"] = schema
+				}
+			}
+		}
+		tools = append(tools, toolDef)
+	}
+	if len(tools) > 0 {
+		body["tools"] = tools
+	}
+
+	return body, nil
+}
+
+func extractLatestTurn(msgs []react.Message) []react.Message {
+	if len(msgs) == 0 {
+		return nil
+	}
+	lastRole := msgs[len(msgs)-1].Role
+	if lastRole == react.RoleTool {
+		start := len(msgs) - 1
+		for start > 0 && msgs[start-1].Role == react.RoleTool {
+			start--
+		}
+		return msgs[start:]
+	}
+	return msgs[len(msgs)-1:]
+}
+
+func buildInteractionsContent(m react.Message) []map[string]any {
+	var content []map[string]any
+	for _, p := range m.Content {
+		switch p.Type {
+		case react.PartText:
+			if p.Text != "" {
+				content = append(content, map[string]any{
+					"type": "text",
+					"text": p.Text,
+				})
+			}
+		case react.PartImage:
+			if len(p.Data) > 0 {
+				mime := p.MIMEType
+				if mime == "" {
+					mime = "image/jpeg"
+				}
+				content = append(content, map[string]any{
+					"type":      "image",
+					"mime_type": mime,
+					"data":      base64.StdEncoding.EncodeToString(p.Data),
+				})
+			} else if p.ImageURL != "" {
+				if strings.HasPrefix(p.ImageURL, "data:") {
+					parts := strings.SplitN(p.ImageURL, ",", 2)
+					if len(parts) == 2 {
+						header := parts[0]
+						data := parts[1]
+						mime := "image/jpeg"
+						if semi := strings.Index(header, ";"); semi > 5 {
+							mime = header[5:semi]
+						}
+						content = append(content, map[string]any{
+							"type":      "image",
+							"mime_type": mime,
+							"data":      data,
+						})
+						continue
+					}
+				}
+				imgItem := map[string]any{
+					"type": "image",
+					"uri":  p.ImageURL,
+				}
+				if p.MIMEType != "" {
+					imgItem["mime_type"] = p.MIMEType
+				}
+				content = append(content, imgItem)
+			}
+		}
+	}
+	if len(content) == 0 && m.Text() != "" {
+		content = append(content, map[string]any{
+			"type": "text",
+			"text": m.Text(),
+		})
+	}
+	return content
+}
+
+// Interactions Wire format structs
+
+type interactionResponseWire struct {
+	ID     string                `json:"id"`
+	Model  string                `json:"model"`
+	Status string                `json:"status"`
+	Steps  []interactionStepWire `json:"steps"`
+	Usage  *interactionUsageWire `json:"usage"`
+	Error  *struct {
+		Code    any    `json:"code"`
+		Message string `json:"message"`
+		Status  string `json:"status"`
+	} `json:"error"`
+	Errors []struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+type interactionStepWire struct {
+	Type      string                   `json:"type"`
+	ID        string                   `json:"id,omitempty"`
+	Name      string                   `json:"name,omitempty"`
+	Arguments json.RawMessage          `json:"arguments,omitempty"`
+	Content   []interactionContentWire `json:"content,omitempty"`
+	Text      string                   `json:"text,omitempty"`
+	Signature string                   `json:"signature,omitempty"`
+}
+
+type interactionContentWire struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	MIMEType string `json:"mime_type,omitempty"`
+	Data     string `json:"data,omitempty"`
+	URI      string `json:"uri,omitempty"`
+}
+
+type interactionUsageWire struct {
+	TotalInputTokens   int `json:"total_input_tokens"`
+	TotalOutputTokens  int `json:"total_output_tokens"`
+	TotalThoughtTokens int `json:"total_thought_tokens"`
+	TotalCachedTokens  int `json:"total_cached_tokens"`
+	TotalTokens        int `json:"total_tokens"`
+	TotalToolUseTokens int `json:"total_tool_use_tokens"`
+}
+
+type interactionStreamEventWire struct {
+	Type        string                `json:"type"`
+	EventType   string                `json:"event_type"`
+	Index       int                   `json:"index"`
+	Status      string                `json:"status,omitempty"`
+	Step        *interactionStepWire  `json:"step,omitempty"`
+	Delta       *interactionDeltaWire `json:"delta,omitempty"`
+	Interaction *struct {
+		ID     string                `json:"id"`
+		Status string                `json:"status"`
+		Usage  *interactionUsageWire `json:"usage"`
+	} `json:"interaction,omitempty"`
+	Usage    *interactionUsageWire `json:"usage,omitempty"`
+	Metadata *struct {
+		TotalUsage *interactionUsageWire `json:"total_usage"`
+		StepUsage  *interactionUsageWire `json:"step_usage"`
+	} `json:"metadata,omitempty"`
+}
+
+type interactionDeltaWire struct {
+	Type             string `json:"type"`
+	Text             string `json:"text,omitempty"`
+	Arguments        string `json:"arguments,omitempty"`
+	PartialArguments string `json:"partial_arguments,omitempty"`
+	Signature        string `json:"signature,omitempty"`
 }
 
 func (p *Provider) setHeaders(req *http.Request) {

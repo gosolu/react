@@ -52,6 +52,7 @@ func New(opts ...Option) (*Agent, error) {
 		maxTurns:      20,
 		maxParallel:   4,
 		toolTimeout:   2 * time.Minute,
+		modelTimeout:  2 * time.Minute,
 		maxDepth:      3,
 		maxToolOutput: 64 * 1024,
 	}

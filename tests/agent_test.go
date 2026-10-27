@@ -577,3 +577,37 @@ func TestAgentClosedError(t *testing.T) {
 		t.Fatalf("expected ErrAgentClosed after Close(), got %v", err)
 	}
 }
+
+func TestMessagePersistenceOnErrorPath(t *testing.T) {
+	ctx := context.Background()
+	store := react.NewInMemory()
+
+	failProvider := mock.NewFunc(func(ctx context.Context, req *react.Request) (*react.Response, error) {
+		return nil, errors.New("upstream provider connection failed")
+	})
+
+	a, err := react.New(
+		react.WithProvider(failProvider),
+		react.WithStore(store),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sessionID := "test_error_persistence"
+	_, runErr := a.Run(ctx, sessionID, "Hello, remember me!")
+	if runErr == nil {
+		t.Fatal("expected run error from failing provider")
+	}
+
+	history, err := store.Load(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("store.Load failed: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("expected user message to be persisted despite provider error, got %d messages", len(history))
+	}
+	if history[0].Role != react.RoleUser || history[0].Text() != "Hello, remember me!" {
+		t.Fatalf("persisted message does not match user input: %+v", history[0])
+	}
+}

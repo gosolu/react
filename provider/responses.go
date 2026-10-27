@@ -22,6 +22,12 @@ const (
 
 	// APITypeResponses routes requests to the OpenAI-compatible Responses API (/responses).
 	APITypeResponses APIType = "responses"
+
+	// APITypeInteractions routes requests to the Google Gemini Interactions API (/interactions).
+	APITypeInteractions APIType = "interactions"
+
+	// APITypeGenerateContent routes requests to the legacy Gemini generateContent endpoint.
+	APITypeGenerateContent APIType = "generate_content"
 )
 
 // BuildResponsesRequestBody creates a request payload for the Responses API.

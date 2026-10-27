@@ -7,6 +7,7 @@ import (
 	"io"
 	"iter"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -63,6 +64,21 @@ func ReadSSE(r io.Reader) iter.Seq2[SSEEvent, error] {
 	}
 }
 
+// DefaultHTTPClient provides a sane default HTTP client with transport timeouts.
+var DefaultHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ResponseHeaderTimeout: 60 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	},
+}
+
 // RetryPolicy controls retries of transient HTTP failures.
 type RetryPolicy struct {
 	MaxRetries int           // default 2 when zero; set negative to disable
@@ -75,7 +91,7 @@ type RetryPolicy struct {
 // final response is returned as *APIError with the body consumed.
 func (p RetryPolicy) Do(ctx context.Context, client *http.Client, provider string, newReq func(context.Context) (*http.Request, error)) (*http.Response, error) {
 	if client == nil {
-		client = http.DefaultClient
+		client = DefaultHTTPClient
 	}
 	maxRetries := p.MaxRetries
 	if maxRetries == 0 {

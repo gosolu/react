@@ -83,7 +83,7 @@ func (s *ContextSummarizer) Fit(ctx context.Context, system string, msgs []Messa
 	}
 	out := make([]Message, 0, len(msgs)-cutMsg+2)
 	out = append(out,
-		UserText("[Summary of the earlier conversation]\n"+summary),
+		UserText("[Summary of the earlier conversation]\n"+sanitizeSystemReminderTags(summary)),
 		AssistantText("Understood. I'll continue from this summary."),
 	)
 	out = append(out, msgs[cutMsg:]...)
