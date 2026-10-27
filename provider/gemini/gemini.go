@@ -102,63 +102,6 @@ func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[rea
 	return p.streamInteractions(ctx, req)
 }
 
-func (p *Provider) generateChatCompletions(ctx context.Context, req *react.Request) (*react.Response, error) {
-	bodyMap := provider.BuildChatCompletionsRequestBody(req, false)
-	data, err := json.Marshal(bodyMap)
-	if err != nil {
-		return nil, fmt.Errorf("gemini: marshal request: %w", err)
-	}
-
-	endpoint := p.chatCompletionsURL()
-	resp, err := p.cfg.RetryPolicy.Do(ctx, p.cfg.HTTPClient, p.Name(), func(c context.Context) (*http.Request, error) {
-		httpReq, err := http.NewRequestWithContext(c, http.MethodPost, endpoint, bytes.NewReader(data))
-		if err != nil {
-			return nil, err
-		}
-		p.setHeaders(httpReq)
-		return httpReq, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	return provider.ParseChatCompletionsResponse(resp.Body)
-}
-
-func (p *Provider) streamChatCompletions(ctx context.Context, req *react.Request) iter.Seq2[react.StreamEvent, error] {
-	return func(yield func(react.StreamEvent, error) bool) {
-		bodyMap := provider.BuildChatCompletionsRequestBody(req, true)
-		data, err := json.Marshal(bodyMap)
-		if err != nil {
-			yield(react.StreamEvent{}, fmt.Errorf("gemini: marshal request: %w", err))
-			return
-		}
-
-		endpoint := p.chatCompletionsURL()
-		resp, err := p.cfg.RetryPolicy.Do(ctx, p.cfg.HTTPClient, p.Name(), func(c context.Context) (*http.Request, error) {
-			httpReq, err := http.NewRequestWithContext(c, http.MethodPost, endpoint, bytes.NewReader(data))
-			if err != nil {
-				return nil, err
-			}
-			p.setHeaders(httpReq)
-			httpReq.Header.Set("Accept", "text/event-stream")
-			return httpReq, nil
-		})
-		if err != nil {
-			yield(react.StreamEvent{}, err)
-			return
-		}
-		defer func() { _ = resp.Body.Close() }()
-
-		for ev, err := range provider.StreamChatCompletions(ctx, resp.Body) {
-			if !yield(ev, err) {
-				return
-			}
-		}
-	}
-}
-
 func (p *Provider) generateNative(ctx context.Context, req *react.Request) (*react.Response, error) {
 	bodyMap, err := p.buildNativeRequestBody(req)
 	if err != nil {
@@ -441,12 +384,6 @@ func (p *Provider) nativeEndpointURL(model string, stream bool) string {
 	return fmt.Sprintf("%s/models/%s:%s", baseURL, model, action)
 }
 
-func (p *Provider) chatCompletionsURL() string {
-	baseURL := strings.TrimSuffix(p.cfg.BaseURL, "/chat/completions")
-	baseURL = strings.TrimSuffix(baseURL, "/openai")
-	return baseURL + "/openai/chat/completions"
-}
-
 func (p *Provider) interactionsEndpointURL() string {
 	baseURL := p.cfg.BaseURL
 	baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
@@ -603,7 +540,6 @@ func (p *Provider) streamInteractions(ctx context.Context, req *react.Request) i
 		var toolCallSeen bool
 		var toolCallIndex int
 		var finishedCleanly bool
-		var textSeen bool
 
 		for sse, sseErr := range provider.ReadSSE(resp.Body) {
 			if sseErr != nil {
@@ -685,7 +621,6 @@ func (p *Provider) streamInteractions(ctx context.Context, req *react.Request) i
 					switch d.Type {
 					case "text":
 						if d.Text != "" {
-							textSeen = true
 							if !yield(react.StreamEvent{
 								Type: react.StreamTextDelta,
 								Text: d.Text,
@@ -811,19 +746,7 @@ func (p *Provider) streamInteractions(ctx context.Context, req *react.Request) i
 		}
 
 		if !finishedCleanly && ctx.Err() == nil {
-			if toolCallSeen {
-				yield(react.StreamEvent{
-					Type:       react.StreamDone,
-					StopReason: react.StopToolCall,
-				}, nil)
-			} else if textSeen {
-				yield(react.StreamEvent{
-					Type:       react.StreamDone,
-					StopReason: react.StopEnd,
-				}, nil)
-			} else {
-				yield(react.StreamEvent{}, io.ErrUnexpectedEOF)
-			}
+			yield(react.StreamEvent{}, io.ErrUnexpectedEOF)
 		}
 	}
 }
@@ -946,6 +869,18 @@ func (p *Provider) buildInteractionsRequestBody(req *react.Request, stream bool)
 				})
 
 			case react.RoleAssistant:
+				if m.Reasoning != "" || (m.ReasoningSignature != "" && len(m.ToolCalls) == 0) {
+					thoughtStep := map[string]any{
+						"type": "thought",
+					}
+					if m.Reasoning != "" {
+						thoughtStep["text"] = m.Reasoning
+					}
+					if m.ReasoningSignature != "" {
+						thoughtStep["signature"] = m.ReasoningSignature
+					}
+					steps = append(steps, thoughtStep)
+				}
 				content := buildInteractionsContent(m)
 				if len(content) > 0 {
 					steps = append(steps, map[string]any{
@@ -953,7 +888,7 @@ func (p *Provider) buildInteractionsRequestBody(req *react.Request, stream bool)
 						"content": content,
 					})
 				}
-				for _, tc := range m.ToolCalls {
+				for i, tc := range m.ToolCalls {
 					var parsedArgs any
 					if len(tc.Arguments) > 0 {
 						_ = json.Unmarshal(tc.Arguments, &parsedArgs)
@@ -967,8 +902,12 @@ func (p *Provider) buildInteractionsRequestBody(req *react.Request, stream bool)
 						"name":      tc.Name,
 						"arguments": parsedArgs,
 					}
-					if tc.ThoughtSignature != "" {
-						fcStep["signature"] = tc.ThoughtSignature
+					sig := tc.ThoughtSignature
+					if sig == "" && i == 0 && m.Reasoning == "" && m.ReasoningSignature != "" {
+						sig = m.ReasoningSignature
+					}
+					if sig != "" {
+						fcStep["signature"] = sig
 					}
 					steps = append(steps, fcStep)
 				}

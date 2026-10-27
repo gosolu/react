@@ -295,27 +295,3 @@ func generateUUID() string {
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
-
-type chatCompletionResponse struct {
-	Choices []struct {
-		Message struct {
-			Role             string `json:"role"`
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"`
-			ToolCalls        []struct {
-				ID       string `json:"id"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"message"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-	} `json:"usage"`
-}
-
-func mapFinishReason(r string) react.StopReason { return provider.MapFinishReason(r) }

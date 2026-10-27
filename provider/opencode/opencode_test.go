@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/gosolu/react"
+	"github.com/gosolu/react/provider"
 )
 
 func TestOpenCodeHeaders(t *testing.T) {
@@ -17,42 +18,7 @@ func TestOpenCodeHeaders(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedHeader = r.Header.Clone()
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(chatCompletionResponse{
-			Choices: []struct {
-				Message struct {
-					Role             string `json:"role"`
-					Content          string `json:"content"`
-					ReasoningContent string `json:"reasoning_content"`
-					ToolCalls        []struct {
-						ID       string `json:"id"`
-						Function struct {
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
-						} `json:"function"`
-					} `json:"tool_calls"`
-				} `json:"message"`
-				FinishReason string `json:"finish_reason"`
-			}{
-				{
-					Message: struct {
-						Role             string `json:"role"`
-						Content          string `json:"content"`
-						ReasoningContent string `json:"reasoning_content"`
-						ToolCalls        []struct {
-							ID       string `json:"id"`
-							Function struct {
-								Name      string `json:"name"`
-								Arguments string `json:"arguments"`
-							} `json:"function"`
-						} `json:"tool_calls"`
-					}{
-						Role:    "assistant",
-						Content: "Hello from OpenCode Go",
-					},
-					FinishReason: "stop",
-				},
-			},
-		})
+		_, _ = fmt.Fprintln(w, `{"choices":[{"message":{"role":"assistant","content":"Hello from OpenCode Go"},"finish_reason":"stop"}]}`)
 	}))
 	defer srv.Close()
 
@@ -95,42 +61,7 @@ func TestOpenCodeSessionPrecedence(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedSession = r.Header.Get(HeaderSession)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(chatCompletionResponse{
-			Choices: []struct {
-				Message struct {
-					Role             string `json:"role"`
-					Content          string `json:"content"`
-					ReasoningContent string `json:"reasoning_content"`
-					ToolCalls        []struct {
-						ID       string `json:"id"`
-						Function struct {
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
-						} `json:"function"`
-					} `json:"tool_calls"`
-				} `json:"message"`
-				FinishReason string `json:"finish_reason"`
-			}{
-				{
-					Message: struct {
-						Role             string `json:"role"`
-						Content          string `json:"content"`
-						ReasoningContent string `json:"reasoning_content"`
-						ToolCalls        []struct {
-							ID       string `json:"id"`
-							Function struct {
-								Name      string `json:"name"`
-								Arguments string `json:"arguments"`
-							} `json:"function"`
-						} `json:"tool_calls"`
-					}{
-						Role:    "assistant",
-						Content: "OK",
-					},
-					FinishReason: "stop",
-				},
-			},
-		})
+		_, _ = fmt.Fprintln(w, `{"choices":[{"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]}`)
 	}))
 	defer srv.Close()
 
@@ -186,68 +117,26 @@ func TestOpenCodeGenerate(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		resp := chatCompletionResponse{
-			Choices: []struct {
-				Message struct {
-					Role             string `json:"role"`
-					Content          string `json:"content"`
-					ReasoningContent string `json:"reasoning_content"`
-					ToolCalls        []struct {
-						ID       string `json:"id"`
-						Function struct {
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
-						} `json:"function"`
-					} `json:"tool_calls"`
-				} `json:"message"`
-				FinishReason string `json:"finish_reason"`
-			}{
-				{
-					Message: struct {
-						Role             string `json:"role"`
-						Content          string `json:"content"`
-						ReasoningContent string `json:"reasoning_content"`
-						ToolCalls        []struct {
-							ID       string `json:"id"`
-							Function struct {
-								Name      string `json:"name"`
-								Arguments string `json:"arguments"`
-							} `json:"function"`
-						} `json:"tool_calls"`
-					}{
-						Role:    "assistant",
-						Content: "Running tool",
-						ToolCalls: []struct {
-							ID       string `json:"id"`
-							Function struct {
-								Name      string `json:"name"`
-								Arguments string `json:"arguments"`
-							} `json:"function"`
-						}{
-							{
-								ID: "call_123",
-								Function: struct {
-									Name      string `json:"name"`
-									Arguments string `json:"arguments"`
-								}{
-									Name:      "read_file",
-									Arguments: `{"path":"main.go"}`,
-								},
-							},
-						},
-					},
-					FinishReason: "tool_calls",
+		_, _ = fmt.Fprintln(w, `{
+			"choices": [{
+				"message": {
+					"role": "assistant",
+					"content": "Running tool",
+					"tool_calls": [{
+						"id": "call_123",
+						"function": {
+							"name": "read_file",
+							"arguments": "{\"path\":\"main.go\"}"
+						}
+					}]
 				},
-			},
-			Usage: struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
-			}{
-				PromptTokens:     42,
-				CompletionTokens: 18,
-			},
-		}
-		_ = json.NewEncoder(w).Encode(resp)
+				"finish_reason": "tool_calls"
+			}],
+			"usage": {
+				"prompt_tokens": 42,
+				"completion_tokens": 18
+			}
+		}`)
 	}))
 	defer srv.Close()
 
@@ -284,44 +173,16 @@ func TestOpenCodeGenerate(t *testing.T) {
 func TestOpenCodeGenerateReasoning(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		resp := chatCompletionResponse{
-			Choices: []struct {
-				Message struct {
-					Role             string `json:"role"`
-					Content          string `json:"content"`
-					ReasoningContent string `json:"reasoning_content"`
-					ToolCalls        []struct {
-						ID       string `json:"id"`
-						Function struct {
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
-						} `json:"function"`
-					} `json:"tool_calls"`
-				} `json:"message"`
-				FinishReason string `json:"finish_reason"`
-			}{
-				{
-					Message: struct {
-						Role             string `json:"role"`
-						Content          string `json:"content"`
-						ReasoningContent string `json:"reasoning_content"`
-						ToolCalls        []struct {
-							ID       string `json:"id"`
-							Function struct {
-								Name      string `json:"name"`
-								Arguments string `json:"arguments"`
-							} `json:"function"`
-						} `json:"tool_calls"`
-					}{
-						Role:             "assistant",
-						Content:          "Result is 42.",
-						ReasoningContent: "Thinking about life, the universe, and everything...",
-					},
-					FinishReason: "stop",
+		_, _ = fmt.Fprintln(w, `{
+			"choices": [{
+				"message": {
+					"role": "assistant",
+					"content": "Result is 42.",
+					"reasoning_content": "Thinking about life, the universe, and everything..."
 				},
-			},
-		}
-		_ = json.NewEncoder(w).Encode(resp)
+				"finish_reason": "stop"
+			}]
+		}`)
 	}))
 	defer srv.Close()
 
@@ -347,42 +208,7 @@ func TestOpenCodeGenerateVision(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&capturedBody)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(chatCompletionResponse{
-			Choices: []struct {
-				Message struct {
-					Role             string `json:"role"`
-					Content          string `json:"content"`
-					ReasoningContent string `json:"reasoning_content"`
-					ToolCalls        []struct {
-						ID       string `json:"id"`
-						Function struct {
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
-						} `json:"function"`
-					} `json:"tool_calls"`
-				} `json:"message"`
-				FinishReason string `json:"finish_reason"`
-			}{
-				{
-					Message: struct {
-						Role             string `json:"role"`
-						Content          string `json:"content"`
-						ReasoningContent string `json:"reasoning_content"`
-						ToolCalls        []struct {
-							ID       string `json:"id"`
-							Function struct {
-								Name      string `json:"name"`
-								Arguments string `json:"arguments"`
-							} `json:"function"`
-						} `json:"tool_calls"`
-					}{
-						Role:    "assistant",
-						Content: "I see a chart and a logo.",
-					},
-					FinishReason: "stop",
-				},
-			},
-		})
+		_, _ = fmt.Fprintln(w, `{"choices":[{"message":{"role":"assistant","content":"I see a chart and a logo."},"finish_reason":"stop"}]}`)
 	}))
 	defer srv.Close()
 
@@ -502,9 +328,9 @@ func TestOpenCodeFinishReasons(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
-			got := mapFinishReason(tt.in)
+			got := provider.MapFinishReason(tt.in)
 			if got != tt.want {
-				t.Errorf("mapFinishReason(%q) = %q, want %q", tt.in, got, tt.want)
+				t.Errorf("provider.MapFinishReason(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}

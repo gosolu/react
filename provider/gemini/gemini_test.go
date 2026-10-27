@@ -830,12 +830,15 @@ func TestGeminiInteractions_MultiTurn_Stateless_Input(t *testing.T) {
 		Messages: []react.Message{
 			react.UserText("What is the weather in Tokyo?"),
 			{
-				Role: react.RoleAssistant,
+				Role:               react.RoleAssistant,
+				Reasoning:          "Need to check Tokyo weather first.",
+				ReasoningSignature: "sig_thought_tokyo",
 				ToolCalls: []react.ToolCall{
 					{
-						ID:        "call_tokyo",
-						Name:      "get_weather",
-						Arguments: []byte(`{"city":"Tokyo"}`),
+						ID:               "call_tokyo",
+						Name:             "get_weather",
+						Arguments:        []byte(`{"city":"Tokyo"}`),
+						ThoughtSignature: "sig_fc_tokyo",
 					},
 				},
 			},
@@ -856,10 +859,10 @@ func TestGeminiInteractions_MultiTurn_Stateless_Input(t *testing.T) {
 		t.Fatalf("text = %q", resp.Message.Text())
 	}
 
-	// Verify input contains chronological Steps: user_input, function_call, function_result
+	// Verify input contains chronological Steps: user_input, thought, function_call, function_result
 	inputSteps, ok := capturedBody["input"].([]any)
-	if !ok || len(inputSteps) != 3 {
-		t.Fatalf("captured input = %+v, want 3 steps", capturedBody["input"])
+	if !ok || len(inputSteps) != 4 {
+		t.Fatalf("captured input = %+v, want 4 steps", capturedBody["input"])
 	}
 
 	s0 := inputSteps[0].(map[string]any)
@@ -868,13 +871,49 @@ func TestGeminiInteractions_MultiTurn_Stateless_Input(t *testing.T) {
 	}
 
 	s1 := inputSteps[1].(map[string]any)
-	if s1["type"] != "function_call" || s1["id"] != "call_tokyo" || s1["name"] != "get_weather" {
-		t.Errorf("step 1 = %+v, want function_call for call_tokyo", s1)
+	if s1["type"] != "thought" || s1["text"] != "Need to check Tokyo weather first." || s1["signature"] != "sig_thought_tokyo" {
+		t.Errorf("step 1 = %+v, want thought step with text and signature", s1)
 	}
 
 	s2 := inputSteps[2].(map[string]any)
-	if s2["type"] != "function_result" || s2["call_id"] != "call_tokyo" || s2["name"] != "get_weather" {
-		t.Errorf("step 2 = %+v, want function_result for call_tokyo", s2)
+	if s2["type"] != "function_call" || s2["id"] != "call_tokyo" || s2["name"] != "get_weather" || s2["signature"] != "sig_fc_tokyo" {
+		t.Errorf("step 2 = %+v, want function_call for call_tokyo with signature", s2)
+	}
+
+	s3 := inputSteps[3].(map[string]any)
+	if s3["type"] != "function_result" || s3["call_id"] != "call_tokyo" || s3["name"] != "get_weather" {
+		t.Errorf("step 3 = %+v, want function_result for call_tokyo", s3)
+	}
+}
+
+func TestGeminiInteractions_Stream_UnexpectedEOF(t *testing.T) {
+	sseData := `event: step.start
+data: {"type": "step.start", "index": 0, "step": {"type": "model_output"}}
+
+event: step.delta
+data: {"type": "step.delta", "index": 0, "delta": {"type": "text", "text": "Partial stream without completion"}}
+`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, sseData)
+	}))
+	defer ts.Close()
+
+	p := New(Config{
+		APIKey:  "test-key",
+		BaseURL: ts.URL,
+	})
+
+	var errFound error
+	for _, err := range p.Stream(context.Background(), &react.Request{Model: ModelGemini38Flash, Messages: []react.Message{react.UserText("hi")}}) {
+		if err != nil {
+			errFound = err
+			break
+		}
+	}
+
+	if !errors.Is(errFound, io.ErrUnexpectedEOF) {
+		t.Fatalf("expected io.ErrUnexpectedEOF on truncated stream, got %v", errFound)
 	}
 }
 
