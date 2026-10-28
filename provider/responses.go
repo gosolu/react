@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,23 +10,6 @@ import (
 	"strings"
 
 	"github.com/gosolu/react"
-)
-
-// APIType specifies the model API protocol family.
-type APIType string
-
-const (
-	// APITypeChatCompletions routes requests to the standard /chat/completions endpoint.
-	APITypeChatCompletions APIType = "chat_completions"
-
-	// APITypeResponses routes requests to the OpenAI-compatible Responses API (/responses).
-	APITypeResponses APIType = "responses"
-
-	// APITypeInteractions routes requests to the Google Gemini Interactions API (/interactions).
-	APITypeInteractions APIType = "interactions"
-
-	// APITypeGenerateContent routes requests to the legacy Gemini generateContent endpoint.
-	APITypeGenerateContent APIType = "generate_content"
 )
 
 // BuildResponsesRequestBody creates a request payload for the Responses API.
@@ -68,10 +50,7 @@ func BuildResponsesRequestBody(req *react.Request, stream bool) map[string]any {
 				input = append(input, map[string]any{
 					"type": "reasoning",
 					"content": []map[string]any{
-						{
-							"type": "reasoning_text",
-							"text": m.Reasoning,
-						},
+						{"type": "reasoning_text", "text": m.Reasoning},
 					},
 				})
 			}
@@ -100,7 +79,7 @@ func BuildResponsesRequestBody(req *react.Request, stream bool) map[string]any {
 	body["input"] = input
 
 	if len(req.Tools) > 0 {
-		var tools []map[string]any
+		tools := make([]map[string]any, 0, len(req.Tools))
 		for _, t := range req.Tools {
 			tools = append(tools, map[string]any{
 				"type":        "function",
@@ -128,14 +107,7 @@ func BuildResponsesRequestBody(req *react.Request, stream bool) map[string]any {
 }
 
 func buildResponsesPartsContent(m react.Message) any {
-	hasImages := false
-	for _, part := range m.Content {
-		if part.Type == react.PartImage {
-			hasImages = true
-			break
-		}
-	}
-	if !hasImages {
+	if !HasImageParts(m.Content) {
 		return m.Text()
 	}
 
@@ -150,33 +122,18 @@ func buildResponsesPartsContent(m react.Message) any {
 		case react.PartImage:
 			parts = append(parts, map[string]any{
 				"type":      "input_image",
-				"image_url": resolveResponsesImageURL(part),
+				"image_url": ResolveImageURL(part),
 			})
 		}
 	}
 	return parts
 }
 
-func resolveResponsesImageURL(part react.Part) string {
-	if part.ImageURL != "" {
-		return part.ImageURL
-	}
-	if len(part.Data) == 0 {
-		return ""
-	}
-	mime := part.MIMEType
-	if mime == "" {
-		mime = "image/jpeg"
-	}
-	return fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(part.Data))
-}
-
 // ResponsesResponseEnvelope represents the top-level Response object from /responses.
 type ResponsesResponseEnvelope struct {
-	ID     string                `json:"id"`
-	Status string                `json:"status"`
-	Output []ResponsesOutputItem `json:"output"`
-	// OutputText is the aggregated text returned by some SDKs and server implementations.
+	ID                string                      `json:"id"`
+	Status            string                      `json:"status"`
+	Output            []ResponsesOutputItem       `json:"output"`
 	OutputText        string                      `json:"output_text"`
 	IncompleteDetails *ResponsesIncompleteDetails `json:"incomplete_details"`
 	Usage             *ResponsesUsage             `json:"usage"`
@@ -215,6 +172,23 @@ type ResponsesUsage struct {
 	TotalTokens  int `json:"total_tokens"`
 }
 
+func mapResponsesStopReason(hasToolCalls bool, inc *ResponsesIncompleteDetails) react.StopReason {
+	if hasToolCalls {
+		return react.StopToolCall
+	}
+	if inc != nil {
+		switch inc.Reason {
+		case "max_output_tokens", "length":
+			return react.StopLength
+		case "content_filter":
+			return react.StopContentFilter
+		default:
+			return react.StopOther
+		}
+	}
+	return react.StopEnd
+}
+
 // ParseResponsesResponse decodes a JSON response body into a *react.Response.
 func ParseResponsesResponse(r io.Reader) (*react.Response, error) {
 	var env ResponsesResponseEnvelope
@@ -222,12 +196,8 @@ func ParseResponsesResponse(r io.Reader) (*react.Response, error) {
 		return nil, fmt.Errorf("responses: decode response: %w", err)
 	}
 
-	msg := react.Message{
-		Role: react.RoleAssistant,
-	}
-
-	var textBuilder strings.Builder
-	var reasoningBuilder strings.Builder
+	msg := react.Message{Role: react.RoleAssistant}
+	var textBuilder, reasoningBuilder strings.Builder
 
 	for _, item := range env.Output {
 		switch item.Type {
@@ -272,20 +242,6 @@ func ParseResponsesResponse(r io.Reader) (*react.Response, error) {
 	}
 	msg.Reasoning = reasoningBuilder.String()
 
-	stopReason := react.StopEnd
-	if len(msg.ToolCalls) > 0 {
-		stopReason = react.StopToolCall
-	} else if env.IncompleteDetails != nil {
-		switch env.IncompleteDetails.Reason {
-		case "max_output_tokens", "length":
-			stopReason = react.StopLength
-		case "content_filter":
-			stopReason = react.StopContentFilter
-		default:
-			stopReason = react.StopOther
-		}
-	}
-
 	var usage react.Usage
 	if env.Usage != nil {
 		usage.InputTokens = env.Usage.InputTokens
@@ -294,20 +250,23 @@ func ParseResponsesResponse(r io.Reader) (*react.Response, error) {
 
 	return &react.Response{
 		Message:    msg,
-		Reasoning:  reasoningBuilder.String(),
-		StopReason: stopReason,
+		Reasoning:  msg.Reasoning,
+		StopReason: mapResponsesStopReason(len(msg.ToolCalls) > 0, env.IncompleteDetails),
 		Usage:      usage,
 	}, nil
 }
 
 // StreamResponses parses an SSE stream from the Responses API and yields react.StreamEvents.
 func StreamResponses(ctx context.Context, r io.Reader) iter.Seq2[react.StreamEvent, error] {
-	return func(yield func(react.StreamEvent, error) bool) {
-		seenTools := make(map[int]bool)
-		toolCallSeen := false
-		var finishedCleanly bool
+	return StreamResponsesEvents(ctx, ReadSSE(r))
+}
 
-		for sse, err := range ReadSSE(r) {
+// StreamResponsesEvents parses a sequence of SSEEvents from the Responses API and yields react.StreamEvents.
+func StreamResponsesEvents(ctx context.Context, events iter.Seq2[SSEEvent, error]) iter.Seq2[react.StreamEvent, error] {
+	return func(yield func(react.StreamEvent, error) bool) {
+		var toolCallSeen, finishedCleanly bool
+
+		for sse, err := range events {
 			if err != nil {
 				if err != io.EOF && ctx.Err() == nil {
 					yield(react.StreamEvent{}, err)
@@ -317,42 +276,9 @@ func StreamResponses(ctx context.Context, r io.Reader) iter.Seq2[react.StreamEve
 			if sse.Data == "[DONE]" {
 				return
 			}
-
-			// Check for mid-stream error events or error JSON frames
-			if sse.Event == "error" || strings.Contains(sse.Data, `"error"`) {
-				var errPayload struct {
-					Type  string `json:"type"`
-					Error *struct {
-						Message string `json:"message"`
-						Type    string `json:"type"`
-						Code    any    `json:"code"`
-					} `json:"error"`
-					Response *struct {
-						Status string `json:"status"`
-						Error  *struct {
-							Message string `json:"message"`
-							Type    string `json:"type"`
-						} `json:"error"`
-					} `json:"response"`
-				}
-				if json.Unmarshal([]byte(sse.Data), &errPayload) == nil {
-					if errPayload.Error != nil && errPayload.Error.Message != "" {
-						msg := errPayload.Error.Message
-						if errPayload.Error.Type != "" {
-							msg = fmt.Sprintf("%s (%s)", msg, errPayload.Error.Type)
-						}
-						yield(react.StreamEvent{}, fmt.Errorf("provider stream error: %s", msg))
-						return
-					}
-					if errPayload.Response != nil && errPayload.Response.Error != nil && errPayload.Response.Error.Message != "" {
-						yield(react.StreamEvent{}, fmt.Errorf("provider stream error: %s", errPayload.Response.Error.Message))
-						return
-					}
-				}
-				if sse.Event == "error" {
-					yield(react.StreamEvent{}, fmt.Errorf("provider stream error: %s", sse.Data))
-					return
-				}
+			if err := CheckSSEError(sse, "provider stream error"); err != nil {
+				yield(react.StreamEvent{}, err)
+				return
 			}
 
 			var base struct {
@@ -403,7 +329,6 @@ func StreamResponses(ctx context.Context, r io.Reader) iter.Seq2[react.StreamEve
 			case "response.output_item.added":
 				if base.Item != nil && base.Item.Type == "function_call" {
 					toolCallSeen = true
-					seenTools[base.OutputIndex] = true
 					callID := base.Item.CallID
 					if callID == "" {
 						callID = base.Item.ID
@@ -442,19 +367,7 @@ func StreamResponses(ctx context.Context, r io.Reader) iter.Seq2[react.StreamEve
 							return
 						}
 					}
-					stopReason := react.StopEnd
-					if toolCallSeen {
-						stopReason = react.StopToolCall
-					} else if base.Response.IncompleteDetails != nil {
-						switch base.Response.IncompleteDetails.Reason {
-						case "max_output_tokens", "length":
-							stopReason = react.StopLength
-						case "content_filter":
-							stopReason = react.StopContentFilter
-						default:
-							stopReason = react.StopOther
-						}
-					}
+					stopReason := mapResponsesStopReason(toolCallSeen, base.Response.IncompleteDetails)
 					if !yield(react.StreamEvent{Type: react.StreamDone, StopReason: stopReason}, nil) {
 						return
 					}

@@ -6,13 +6,28 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/gosolu/react"
+	"github.com/gosolu/react/provider"
 )
+
+type stubClient struct {
+	postFunc   func(ctx context.Context, url string, headers map[string]string, body io.Reader) (io.ReadCloser, error)
+	streamFunc func(ctx context.Context, url string, headers map[string]string, body io.Reader) iter.Seq2[provider.SSEEvent, error]
+}
+
+func (s *stubClient) Post(ctx context.Context, url string, headers map[string]string, body io.Reader) (io.ReadCloser, error) {
+	return s.postFunc(ctx, url, headers, body)
+}
+
+func (s *stubClient) Stream(ctx context.Context, url string, headers map[string]string, body io.Reader) iter.Seq2[provider.SSEEvent, error] {
+	return s.streamFunc(ctx, url, headers, body)
+}
 
 func TestGeminiLegacyGenerate_Text(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +57,7 @@ func TestGeminiLegacyGenerate_Text(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := NewGenerateContent(Config{
+	p := NewGenerateContent(provider.Config{
 		APIKey:  "gemini-key",
 		BaseURL: ts.URL,
 	})
@@ -99,7 +114,7 @@ func TestGeminiLegacyGenerate_ToolCall_StopReason(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := NewGenerateContent(Config{
+	p := NewGenerateContent(provider.Config{
 		APIKey:  "gemini-key",
 		BaseURL: ts.URL,
 	})
@@ -135,18 +150,12 @@ func TestGeminiLegacyGenerate_ToolCall_StopReason(t *testing.T) {
 	}
 }
 
-type roundTripperFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
-	return f(r)
-}
-
 func TestGeminiMultiTurn_ThoughtSignature_And_Collapsing(t *testing.T) {
 	var capturedBody map[string]any
 
-	mockClient := &http.Client{
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+	mockClient := &stubClient{
+		postFunc: func(_ context.Context, _ string, _ map[string]string, body io.Reader) (io.ReadCloser, error) {
+			_ = json.NewDecoder(body).Decode(&capturedBody)
 			respJSON := `{
 				"candidates": [{
 					"content": {
@@ -162,17 +171,13 @@ func TestGeminiMultiTurn_ThoughtSignature_And_Collapsing(t *testing.T) {
 					"candidatesTokenCount": 15
 				}
 			}`
-			return &http.Response{
-				StatusCode: 200,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(strings.NewReader(respJSON)),
-			}, nil
-		}),
+			return io.NopCloser(strings.NewReader(respJSON)), nil
+		},
 	}
 
-	p := NewGenerateContent(Config{
-		APIKey:     "gemini-key",
-		HTTPClient: mockClient,
+	p := NewGenerateContent(provider.Config{
+		APIKey: "gemini-key",
+		Client: mockClient,
 	})
 
 	req := &react.Request{
@@ -300,21 +305,17 @@ func TestGeminiMultiTurn_ThoughtSignature_And_Collapsing(t *testing.T) {
 func TestGeminiToolChoice_And_Schema(t *testing.T) {
 	var capturedBody map[string]any
 
-	mockClient := &http.Client{
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+	mockClient := &stubClient{
+		postFunc: func(_ context.Context, _ string, _ map[string]string, body io.Reader) (io.ReadCloser, error) {
+			_ = json.NewDecoder(body).Decode(&capturedBody)
 			respJSON := `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`
-			return &http.Response{
-				StatusCode: 200,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(strings.NewReader(respJSON)),
-			}, nil
-		}),
+			return io.NopCloser(strings.NewReader(respJSON)), nil
+		},
 	}
 
-	p := NewGenerateContent(Config{
-		APIKey:     "gemini-key",
-		HTTPClient: mockClient,
+	p := NewGenerateContent(provider.Config{
+		APIKey: "gemini-key",
+		Client: mockClient,
 	})
 
 	// Schema with $schema and additionalProperties that Gemini rejects
@@ -392,7 +393,7 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
 	}))
 	defer ts.Close()
 
-	p := NewGenerateContent(Config{
+	p := NewGenerateContent(provider.Config{
 		APIKey:  "gemini-key",
 		BaseURL: ts.URL,
 	})
@@ -460,7 +461,7 @@ func TestGeminiFinishReasons(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			p := NewGenerateContent(Config{APIKey: "k", BaseURL: ts.URL})
+			p := NewGenerateContent(provider.Config{APIKey: "k", BaseURL: ts.URL})
 			resp, err := p.Generate(context.Background(), &react.Request{Model: ModelGemini38Flash, Messages: []react.Message{react.UserText("test")}})
 			if err != nil {
 				t.Fatal(err)
@@ -475,21 +476,17 @@ func TestGeminiFinishReasons(t *testing.T) {
 func TestGeminiMultimodalInput(t *testing.T) {
 	var capturedBody map[string]any
 
-	mockClient := &http.Client{
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+	mockClient := &stubClient{
+		postFunc: func(_ context.Context, _ string, _ map[string]string, body io.Reader) (io.ReadCloser, error) {
+			_ = json.NewDecoder(body).Decode(&capturedBody)
 			respJSON := `{"candidates":[{"content":{"role":"model","parts":[{"text":"saw images"}]},"finishReason":"STOP"}]}`
-			return &http.Response{
-				StatusCode: 200,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(strings.NewReader(respJSON)),
-			}, nil
-		}),
+			return io.NopCloser(strings.NewReader(respJSON)), nil
+		},
 	}
 
-	p := NewGenerateContent(Config{
-		APIKey:     "gemini-key",
-		HTTPClient: mockClient,
+	p := NewGenerateContent(provider.Config{
+		APIKey: "gemini-key",
+		Client: mockClient,
 	})
 
 	req := &react.Request{
@@ -551,7 +548,7 @@ func TestGeminiChatCompletionsMode(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := NewChatCompletions(Config{
+	p := NewChatCompletions(provider.Config{
 		APIKey:  "gemini-key",
 		BaseURL: ts.URL,
 	})
@@ -577,7 +574,7 @@ func TestGeminiStream_Error(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := NewGenerateContent(Config{
+	p := NewGenerateContent(provider.Config{
 		APIKey:  "gemini-key",
 		BaseURL: ts.URL,
 	})
@@ -607,7 +604,7 @@ func TestGeminiStream_UnexpectedEOF(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := NewGenerateContent(Config{
+	p := NewGenerateContent(provider.Config{
 		APIKey:  "gemini-key",
 		BaseURL: ts.URL,
 	})
@@ -664,7 +661,7 @@ func TestGeminiInteractions_Generate_Text(t *testing.T) {
 	defer ts.Close()
 
 	// New(cfg) defaults to Interactions API
-	p := New(Config{
+	p := New(provider.Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
@@ -742,7 +739,7 @@ func TestGeminiInteractions_Generate_ToolCall(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := NewInteractions(Config{
+	p := NewInteractions(provider.Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
@@ -820,7 +817,7 @@ func TestGeminiInteractions_MultiTurn_Stateless_Input(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := New(Config{
+	p := New(provider.Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
@@ -899,7 +896,7 @@ data: {"type": "step.delta", "index": 0, "delta": {"type": "text", "text": "Part
 	}))
 	defer ts.Close()
 
-	p := New(Config{
+	p := New(provider.Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
@@ -933,7 +930,7 @@ func TestGeminiInteractions_Stateful_PreviousInteractionID(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := New(Config{
+	p := New(provider.Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
@@ -1001,7 +998,7 @@ data: {"type": "interaction.completed", "interaction": {"status": "completed", "
 	}))
 	defer ts.Close()
 
-	p := New(Config{
+	p := New(provider.Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
@@ -1051,7 +1048,7 @@ data: {"type": "interaction.requires_action", "interaction": {"status": "require
 	}))
 	defer ts.Close()
 
-	p := New(Config{
+	p := New(provider.Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
@@ -1098,7 +1095,7 @@ func TestGeminiInteractions_Multimodal(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := New(Config{
+	p := New(provider.Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})

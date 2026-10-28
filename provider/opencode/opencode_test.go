@@ -22,10 +22,9 @@ func TestOpenCodeHeaders(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := New(Config{
-		APIKey:    "test-opencode-key",
-		BaseURL:   srv.URL,
-		SessionID: "session-static-123",
+	p := New(provider.Config{
+		APIKey:  "test-opencode-key",
+		BaseURL: srv.URL,
 	})
 
 	if p.Name() != "opencode-go" {
@@ -37,7 +36,8 @@ func TestOpenCodeHeaders(t *testing.T) {
 		Messages: []react.Message{react.UserText("hi")},
 	}
 
-	_, err := p.Generate(context.Background(), req)
+	ctx := react.WithRunContext(context.Background(), &react.RunContext{SessionID: "session-ctx-123"})
+	_, err := p.Generate(ctx, req)
 	if err != nil {
 		t.Fatalf("Generate failed: %v", err)
 	}
@@ -45,8 +45,8 @@ func TestOpenCodeHeaders(t *testing.T) {
 	if got := capturedHeader.Get("User-Agent"); got != DefaultUserAgent {
 		t.Errorf("expected User-Agent %q, got %q", DefaultUserAgent, got)
 	}
-	if got := capturedHeader.Get(HeaderSession); got != "session-static-123" {
-		t.Errorf("expected x-opencode-session %q, got %q", "session-static-123", got)
+	if got := capturedHeader.Get(HeaderSession); got != "session-ctx-123" {
+		t.Errorf("expected x-opencode-session %q, got %q", "session-ctx-123", got)
 	}
 	if got := capturedHeader.Get("Authorization"); got != "Bearer test-opencode-key" {
 		t.Errorf("expected Authorization %q, got %q", "Bearer test-opencode-key", got)
@@ -56,7 +56,7 @@ func TestOpenCodeHeaders(t *testing.T) {
 	}
 }
 
-func TestOpenCodeSessionPrecedence(t *testing.T) {
+func TestOpenCodeSessionResolution(t *testing.T) {
 	var capturedSession string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedSession = r.Header.Get(HeaderSession)
@@ -65,46 +65,23 @@ func TestOpenCodeSessionPrecedence(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// 1. Precedence: SessionIDFunc should win over RunContext and Config.SessionID
-	p := New(Config{
-		BaseURL:   srv.URL,
-		SessionID: "config-session",
-		SessionIDFunc: func(ctx context.Context, req *react.Request) string {
-			return "func-session"
-		},
-	})
-	rc := &react.RunContext{SessionID: "run-ctx-session"}
-	ctx := react.WithRunContext(context.Background(), rc)
-	_, _ = p.Generate(ctx, &react.Request{Model: ModelKimiK3})
-	if capturedSession != "func-session" {
-		t.Errorf("expected func-session, got %q", capturedSession)
-	}
+	p := New(provider.Config{BaseURL: srv.URL})
 
-	// 2. Precedence: RunContext should win over Config.SessionID when SessionIDFunc is nil
-	p2 := New(Config{
-		BaseURL:   srv.URL,
-		SessionID: "config-session",
-	})
-	_, _ = p2.Generate(ctx, &react.Request{Model: ModelKimiK3})
+	// 1. RunContext SessionID should be used when present
+	ctx := react.WithRunContext(context.Background(), &react.RunContext{SessionID: "run-ctx-session"})
+	_, _ = p.Generate(ctx, &react.Request{Model: ModelKimiK3})
 	if capturedSession != "run-ctx-session" {
 		t.Errorf("expected run-ctx-session, got %q", capturedSession)
 	}
 
-	// 3. Precedence: Config.SessionID when RunContext is empty
-	_, _ = p2.Generate(context.Background(), &react.Request{Model: ModelKimiK3})
-	if capturedSession != "config-session" {
-		t.Errorf("expected config-session, got %q", capturedSession)
-	}
-
-	// 4. Default: generated UUID fallback when nothing is configured
-	p3 := New(Config{BaseURL: srv.URL})
-	_, _ = p3.Generate(context.Background(), &react.Request{Model: ModelKimiK3})
+	// 2. Default: generated UUID fallback when RunContext is absent
+	_, _ = p.Generate(context.Background(), &react.Request{Model: ModelKimiK3})
 	if capturedSession == "" {
 		t.Errorf("expected generated UUID session, got empty")
 	}
 	firstGen := capturedSession
 	// Verify it remains stable across requests
-	_, _ = p3.Generate(context.Background(), &react.Request{Model: ModelKimiK3})
+	_, _ = p.Generate(context.Background(), &react.Request{Model: ModelKimiK3})
 	if capturedSession != firstGen {
 		t.Errorf("expected session to remain stable %q, got %q", firstGen, capturedSession)
 	}
@@ -140,10 +117,7 @@ func TestOpenCodeGenerate(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := New(Config{
-		BaseURL:   srv.URL,
-		UserAgent: "custom-coding-agent/2.0",
-	})
+	p := New(provider.Config{BaseURL: srv.URL})
 
 	resp, err := p.Generate(context.Background(), &react.Request{
 		Model:    ModelDeepSeekV4Pro,
@@ -171,7 +145,7 @@ func TestOpenCodeGenerate(t *testing.T) {
 }
 
 func TestOpenCodeGenerateReasoning(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintln(w, `{
 			"choices": [{
@@ -186,7 +160,7 @@ func TestOpenCodeGenerateReasoning(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := New(Config{BaseURL: srv.URL})
+	p := New(provider.Config{BaseURL: srv.URL})
 	resp, err := p.Generate(context.Background(), &react.Request{
 		Model:    ModelDeepSeekV4Pro,
 		Messages: []react.Message{react.UserText("answer")},
@@ -212,7 +186,7 @@ func TestOpenCodeGenerateVision(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := New(Config{BaseURL: srv.URL})
+	p := New(provider.Config{BaseURL: srv.URL})
 	req := &react.Request{
 		Model: ModelDeepSeekV4FlashVision,
 		Messages: []react.Message{
@@ -278,7 +252,7 @@ data: [DONE]
 	}))
 	defer srv.Close()
 
-	p := New(Config{BaseURL: srv.URL})
+	p := New(provider.Config{BaseURL: srv.URL})
 	req := &react.Request{
 		Model:    ModelDeepSeekV4Pro,
 		Messages: []react.Message{react.UserText("hi")},
@@ -362,13 +336,13 @@ func TestOpenCodeResponsesGenerate(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewResponses(Config{
-		APIKey:    "test-oc-key",
-		BaseURL:   srv.URL,
-		SessionID: "sess-resp-1",
+	p := NewResponses(provider.Config{
+		APIKey:  "test-oc-key",
+		BaseURL: srv.URL,
 	})
 
-	resp, err := p.Generate(context.Background(), &react.Request{
+	ctx := react.WithRunContext(context.Background(), &react.RunContext{SessionID: "sess-resp-1"})
+	resp, err := p.Generate(ctx, &react.Request{
 		Model:    ModelDeepSeekV4Pro,
 		Messages: []react.Message{react.UserText("hi")},
 	})
@@ -406,14 +380,14 @@ data: [DONE]
 	}))
 	defer srv.Close()
 
-	p := NewResponses(Config{
-		APIKey:    "test-oc-key",
-		BaseURL:   srv.URL,
-		SessionID: "sess-resp-stream",
+	p := NewResponses(provider.Config{
+		APIKey:  "test-oc-key",
+		BaseURL: srv.URL,
 	})
 
+	ctx := react.WithRunContext(context.Background(), &react.RunContext{SessionID: "sess-resp-stream"})
 	var acc react.Accumulator
-	for ev, err := range p.Stream(context.Background(), &react.Request{Model: ModelKimiK3}) {
+	for ev, err := range p.Stream(ctx, &react.Request{Model: ModelKimiK3}) {
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -2,7 +2,6 @@
 package anthropic
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -10,7 +9,6 @@ import (
 	"io"
 	"iter"
 	"maps"
-	"net/http"
 	"strings"
 
 	"github.com/gosolu/react"
@@ -23,31 +21,17 @@ const DefaultBaseURL = "https://api.anthropic.com/v1"
 // DefaultVersion is the Anthropic API version.
 const DefaultVersion = "2023-06-01"
 
-// Config configures the Anthropic provider.
-type Config struct {
-	APIKey      string
-	BaseURL     string       // defaults to DefaultBaseURL
-	Version     string       // defaults to DefaultVersion
-	HTTPClient  *http.Client // defaults to http.DefaultClient
-	RetryPolicy provider.RetryPolicy
-	ExtraHeader map[string]string
-	PromptCache bool // enables prompt caching breakpoints on system prompt and tools
-}
-
 // Provider implements react.Provider for the Anthropic Messages API.
 type Provider struct {
-	cfg Config
+	cfg provider.Config
 }
 
 // New creates a new Anthropic provider.
-func New(cfg Config) *Provider {
+func New(cfg provider.Config) *Provider {
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = DefaultBaseURL
 	}
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
-	if cfg.Version == "" {
-		cfg.Version = DefaultVersion
-	}
 	return &Provider{cfg: cfg}
 }
 
@@ -58,33 +42,24 @@ func (p *Provider) Name() string {
 
 // Generate implements react.Provider (non-streaming).
 func (p *Provider) Generate(ctx context.Context, req *react.Request) (*react.Response, error) {
-	bodyMap := p.buildRequestBody(req, false)
-	data, err := json.Marshal(bodyMap)
-	if err != nil {
-		return nil, fmt.Errorf("anthropic: marshal request: %w", err)
-	}
-
-	resp, err := p.cfg.RetryPolicy.Do(ctx, p.cfg.HTTPClient, p.Name(), func(c context.Context) (*http.Request, error) {
-		httpReq, err := http.NewRequestWithContext(c, http.MethodPost, p.cfg.BaseURL+"/messages", bytes.NewReader(data))
-		if err != nil {
-			return nil, err
-		}
-		p.setHeaders(httpReq)
-		return httpReq, nil
-	})
+	rc, err := p.cfg.PostJSON(
+		ctx,
+		p.Name(),
+		p.cfg.BaseURL+"/messages",
+		p.headers(),
+		p.buildRequestBody(req, false),
+	)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { _ = rc.Close() }()
 
 	var msgResp messagesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&msgResp); err != nil {
+	if err := json.NewDecoder(rc).Decode(&msgResp); err != nil {
 		return nil, fmt.Errorf("anthropic: decode response: %w", err)
 	}
 
-	msg := react.Message{
-		Role: react.RoleAssistant,
-	}
+	msg := react.Message{Role: react.RoleAssistant}
 	for _, block := range msgResp.Content {
 		switch block.Type {
 		case "thinking":
@@ -117,63 +92,27 @@ func (p *Provider) Generate(ctx context.Context, req *react.Request) (*react.Res
 // Stream implements react.Provider (server-sent events).
 func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[react.StreamEvent, error] {
 	return func(yield func(react.StreamEvent, error) bool) {
-		bodyMap := p.buildRequestBody(req, true)
-		data, err := json.Marshal(bodyMap)
-		if err != nil {
-			yield(react.StreamEvent{}, fmt.Errorf("anthropic: marshal request: %w", err))
-			return
-		}
-
-		resp, err := p.cfg.RetryPolicy.Do(ctx, p.cfg.HTTPClient, p.Name(), func(c context.Context) (*http.Request, error) {
-			httpReq, err := http.NewRequestWithContext(c, http.MethodPost, p.cfg.BaseURL+"/messages", bytes.NewReader(data))
-			if err != nil {
-				return nil, err
-			}
-			p.setHeaders(httpReq)
-			httpReq.Header.Set("Accept", "text/event-stream")
-			return httpReq, nil
-		})
-		if err != nil {
-			yield(react.StreamEvent{}, err)
-			return
-		}
-		defer func() { _ = resp.Body.Close() }()
-
 		var currentUsage react.Usage
 		var finishedCleanly bool
 
-		for sse, err := range provider.ReadSSE(resp.Body) {
+		events := p.cfg.StreamJSON(
+			ctx,
+			p.Name(),
+			p.cfg.BaseURL+"/messages",
+			p.headers(),
+			p.buildRequestBody(req, true),
+		)
+
+		for sse, err := range events {
 			if err != nil {
 				if err != io.EOF && ctx.Err() == nil {
 					yield(react.StreamEvent{}, err)
 				}
 				return
 			}
-
-			// Check for error event type or error JSON payload
-			if sse.Event == "error" || strings.Contains(sse.Data, `"error"`) {
-				var errPayload struct {
-					Type  string `json:"type"`
-					Error *struct {
-						Type    string `json:"type"`
-						Message string `json:"message"`
-					} `json:"error"`
-				}
-				if json.Unmarshal([]byte(sse.Data), &errPayload) == nil && (errPayload.Type == "error" || (errPayload.Error != nil && errPayload.Error.Message != "")) {
-					msg := "anthropic stream error"
-					if errPayload.Error != nil && errPayload.Error.Message != "" {
-						msg = errPayload.Error.Message
-						if errPayload.Error.Type != "" {
-							msg = fmt.Sprintf("%s (%s)", msg, errPayload.Error.Type)
-						}
-					}
-					yield(react.StreamEvent{}, fmt.Errorf("anthropic stream error: %s", msg))
-					return
-				}
-				if sse.Event == "error" {
-					yield(react.StreamEvent{}, fmt.Errorf("anthropic stream error: %s", sse.Data))
-					return
-				}
+			if err := provider.CheckSSEError(sse, "anthropic stream error"); err != nil {
+				yield(react.StreamEvent{}, err)
+				return
 			}
 
 			switch sse.Event {
@@ -190,16 +129,14 @@ func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[rea
 				}
 			case "content_block_start":
 				var blockStart contentBlockStartEvent
-				if json.Unmarshal([]byte(sse.Data), &blockStart) == nil {
-					if blockStart.ContentBlock.Type == "tool_use" {
-						if !yield(react.StreamEvent{
-							Type:       react.StreamToolCallStart,
-							Index:      blockStart.Index,
-							ToolCallID: blockStart.ContentBlock.ID,
-							ToolName:   blockStart.ContentBlock.Name,
-						}, nil) {
-							return
-						}
+				if json.Unmarshal([]byte(sse.Data), &blockStart) == nil && blockStart.ContentBlock.Type == "tool_use" {
+					if !yield(react.StreamEvent{
+						Type:       react.StreamToolCallStart,
+						Index:      blockStart.Index,
+						ToolCallID: blockStart.ContentBlock.ID,
+						ToolName:   blockStart.ContentBlock.Name,
+					}, nil) {
+						return
 					}
 				}
 			case "content_block_delta":
@@ -252,15 +189,15 @@ func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[rea
 	}
 }
 
-func (p *Provider) setHeaders(req *http.Request) {
-	req.Header.Set("Content-Type", "application/json")
+func (p *Provider) headers() map[string]string {
+	h := make(map[string]string, len(p.cfg.ExtraHeader)+3)
+	h["Content-Type"] = "application/json"
+	h["anthropic-version"] = DefaultVersion
 	if p.cfg.APIKey != "" {
-		req.Header.Set("x-api-key", p.cfg.APIKey)
+		h["x-api-key"] = p.cfg.APIKey
 	}
-	req.Header.Set("anthropic-version", p.cfg.Version)
-	for k, v := range p.cfg.ExtraHeader {
-		req.Header.Set(k, v)
-	}
+	maps.Copy(h, p.cfg.ExtraHeader)
+	return h
 }
 
 func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]any {
@@ -280,20 +217,16 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 		body["temperature"] = *req.Temperature
 	}
 
-	// System prompt in Anthropic is a top-level field
-	systemParts := []string{}
+	var systemParts []string
 	if req.System != "" {
 		systemParts = append(systemParts, req.System)
 	}
 
 	var messages []map[string]any
 	for _, m := range req.Messages {
-		if m.Role == react.RoleSystem {
-			systemParts = append(systemParts, m.Text())
-			continue
-		}
-
 		switch m.Role {
+		case react.RoleSystem:
+			systemParts = append(systemParts, m.Text())
 		case react.RoleUser:
 			messages = append(messages, map[string]any{
 				"role":    "user",
@@ -335,10 +268,9 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 		case react.RoleTool:
 			// In Anthropic, tool results go into a "user" turn with type="tool_result"
 			var resBody any = m.Text()
-			if hasImageParts(m.Content) {
+			if provider.HasImageParts(m.Content) {
 				resBody = buildAnthropicContentBlocks(m.Content)
 			}
-
 			resContent := map[string]any{
 				"type":        "tool_result",
 				"tool_use_id": m.ToolCallID,
@@ -346,15 +278,8 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 				"is_error":    m.IsError,
 			}
 			// Collapse with previous user turn if consecutive
-			if len(messages) > 0 && messages[len(messages)-1]["role"] == "user" {
-				if cList, ok := messages[len(messages)-1]["content"].([]map[string]any); ok {
-					messages[len(messages)-1]["content"] = append(cList, resContent)
-				} else {
-					messages = append(messages, map[string]any{
-						"role":    "user",
-						"content": []map[string]any{resContent},
-					})
-				}
+			if n := len(messages); n > 0 && messages[n-1]["role"] == "user" {
+				messages[n-1]["content"] = append(messages[n-1]["content"].([]map[string]any), resContent)
 			} else {
 				messages = append(messages, map[string]any{
 					"role":    "user",
@@ -364,52 +289,35 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 		}
 	}
 
-	if len(systemParts) > 0 {
-		sysText := strings.Join(systemParts, "\n\n")
-		if p.cfg.PromptCache {
-			body["system"] = []map[string]any{
-				{
-					"type":          "text",
-					"text":          sysText,
-					"cache_control": map[string]string{"type": "ephemeral"},
-				},
-			}
-		} else {
-			body["system"] = sysText
-		}
+	if len(systemParts) > 0 && body["system"] == nil {
+		body["system"] = strings.Join(systemParts, "\n\n")
 	}
 	body["messages"] = messages
 
 	if len(req.Tools) > 0 {
-		var tools []map[string]any
-		for i, t := range req.Tools {
+		tools := make([]map[string]any, 0, len(req.Tools))
+		for _, t := range req.Tools {
 			var schema map[string]any
 			_ = json.Unmarshal(t.InputSchema, &schema)
-			toolObj := map[string]any{
+			tools = append(tools, map[string]any{
 				"name":         t.Name,
 				"description":  t.Description,
 				"input_schema": schema,
-			}
-			if p.cfg.PromptCache && i == len(req.Tools)-1 {
-				toolObj["cache_control"] = map[string]string{"type": "ephemeral"}
-			}
-			tools = append(tools, toolObj)
+			})
 		}
 		body["tools"] = tools
 
-		if req.ToolChoice != "" {
-			switch req.ToolChoice {
-			case react.ToolChoiceAuto:
-				body["tool_choice"] = map[string]string{"type": "auto"}
-			case react.ToolChoiceRequired:
-				body["tool_choice"] = map[string]string{"type": "any"}
-			case react.ToolChoiceNone:
-				// no tool choice
-			default:
-				body["tool_choice"] = map[string]string{
-					"type": "tool",
-					"name": req.ToolChoice,
-				}
+		switch req.ToolChoice {
+		case react.ToolChoiceAuto:
+			body["tool_choice"] = map[string]string{"type": "auto"}
+		case react.ToolChoiceRequired:
+			body["tool_choice"] = map[string]string{"type": "any"}
+		case "", react.ToolChoiceNone:
+			// omit
+		default:
+			body["tool_choice"] = map[string]string{
+				"type": "tool",
+				"name": req.ToolChoice,
 			}
 		}
 	}
@@ -418,7 +326,7 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 }
 
 func buildAnthropicContentBlocks(parts []react.Part) []map[string]any {
-	var out []map[string]any
+	out := make([]map[string]any, 0, len(parts))
 	for _, p := range parts {
 		switch p.Type {
 		case react.PartText:
@@ -433,11 +341,8 @@ func buildAnthropicContentBlocks(parts []react.Part) []map[string]any {
 func buildAnthropicImageBlock(p react.Part) map[string]any {
 	if p.ImageURL != "" {
 		return map[string]any{
-			"type": "image",
-			"source": map[string]any{
-				"type": "url",
-				"url":  p.ImageURL,
-			},
+			"type":   "image",
+			"source": map[string]any{"type": "url", "url": p.ImageURL},
 		}
 	}
 	mediaType := p.MIMEType
@@ -456,15 +361,6 @@ func buildAnthropicImageBlock(p react.Part) map[string]any {
 			"data":       b64Data,
 		},
 	}
-}
-
-func hasImageParts(parts []react.Part) bool {
-	for _, p := range parts {
-		if p.Type == react.PartImage {
-			return true
-		}
-	}
-	return false
 }
 
 func mapStopReason(r string) react.StopReason {

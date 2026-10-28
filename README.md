@@ -111,6 +111,7 @@ import (
 	"os"
 
 	"github.com/gosolu/react"
+	"github.com/gosolu/react/provider"
 	"github.com/gosolu/react/provider/openai"
 )
 
@@ -119,7 +120,7 @@ type WeatherInput struct {
 }
 
 func main() {
-	provider := openai.New(openai.Config{
+	p := openai.New(provider.Config{
 		APIKey: os.Getenv("OPENAI_API_KEY"),
 	})
 
@@ -128,7 +129,7 @@ func main() {
 	}, react.ReadOnly())
 
 	a, err := react.New(
-		react.WithProvider(provider),
+		react.WithProvider(p),
 		react.WithModel("gpt-4o"),
 		react.WithTools(weatherTool),
 	)

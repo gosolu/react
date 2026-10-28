@@ -5,13 +5,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"iter"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/gosolu/react"
+	"github.com/gosolu/react/provider"
 )
+
+type stubClient struct {
+	postFunc   func(ctx context.Context, url string, headers map[string]string, body io.Reader) (io.ReadCloser, error)
+	streamFunc func(ctx context.Context, url string, headers map[string]string, body io.Reader) iter.Seq2[provider.SSEEvent, error]
+}
+
+func (s *stubClient) Post(ctx context.Context, url string, headers map[string]string, body io.Reader) (io.ReadCloser, error) {
+	return s.postFunc(ctx, url, headers, body)
+}
+
+func (s *stubClient) Stream(ctx context.Context, url string, headers map[string]string, body io.Reader) iter.Seq2[provider.SSEEvent, error] {
+	return s.streamFunc(ctx, url, headers, body)
+}
 
 func TestOpenAIGenerate(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -41,7 +56,7 @@ func TestOpenAIGenerate(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := New(Config{
+	p := New(provider.Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
@@ -87,7 +102,7 @@ data: [DONE]
 	}))
 	defer ts.Close()
 
-	p := New(Config{
+	p := New(provider.Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
@@ -145,7 +160,7 @@ func TestOpenAIFinishReasons(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			p := New(Config{APIKey: "k", BaseURL: ts.URL})
+			p := New(provider.Config{APIKey: "k", BaseURL: ts.URL})
 			resp, err := p.Generate(context.Background(), &react.Request{Model: "gpt-4o", Messages: []react.Message{react.UserText("test")}})
 			if err != nil {
 				t.Fatal(err)
@@ -187,7 +202,7 @@ func TestOpenAIResponsesGenerate(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := NewResponses(Config{
+	p := NewResponses(provider.Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
@@ -230,7 +245,7 @@ data: [DONE]
 	}))
 	defer ts.Close()
 
-	p := NewResponses(Config{
+	p := NewResponses(provider.Config{
 		APIKey:  "test-key",
 		BaseURL: ts.URL,
 	})
@@ -252,18 +267,12 @@ data: [DONE]
 	}
 }
 
-type roundTripperFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
-	return f(r)
-}
-
 func TestOpenAICachedTokensAndMultimodalToolResult(t *testing.T) {
 	var capturedBody map[string]any
 
-	mockClient := &http.Client{
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+	mockClient := &stubClient{
+		postFunc: func(_ context.Context, _ string, _ map[string]string, body io.Reader) (io.ReadCloser, error) {
+			_ = json.NewDecoder(body).Decode(&capturedBody)
 			respJSON := `{
 				"choices": [{
 					"message": {"content": "ok"},
@@ -277,17 +286,13 @@ func TestOpenAICachedTokensAndMultimodalToolResult(t *testing.T) {
 					}
 				}
 			}`
-			return &http.Response{
-				StatusCode: 200,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(strings.NewReader(respJSON)),
-			}, nil
-		}),
+			return io.NopCloser(strings.NewReader(respJSON)), nil
+		},
 	}
 
-	p := New(Config{
-		APIKey:     "test-key",
-		HTTPClient: mockClient,
+	p := New(provider.Config{
+		APIKey: "test-key",
+		Client: mockClient,
 	})
 
 	req := &react.Request{
@@ -355,9 +360,9 @@ func TestOpenAICachedTokensAndMultimodalToolResult(t *testing.T) {
 func TestOpenAIGeminiThoughtSignature(t *testing.T) {
 	var capturedBody map[string]any
 
-	mockClient := &http.Client{
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+	mockClient := &stubClient{
+		postFunc: func(_ context.Context, _ string, _ map[string]string, body io.Reader) (io.ReadCloser, error) {
+			_ = json.NewDecoder(body).Decode(&capturedBody)
 			respJSON := `{
 				"choices": [{
 					"message": {
@@ -384,17 +389,13 @@ func TestOpenAIGeminiThoughtSignature(t *testing.T) {
 					"completion_tokens": 5
 				}
 			}`
-			return &http.Response{
-				StatusCode: 200,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(strings.NewReader(respJSON)),
-			}, nil
-		}),
+			return io.NopCloser(strings.NewReader(respJSON)), nil
+		},
 	}
 
-	p := New(Config{
-		APIKey:     "test-key",
-		HTTPClient: mockClient,
+	p := New(provider.Config{
+		APIKey: "test-key",
+		Client: mockClient,
 	})
 
 	// 1. First call: verify response parses ThoughtSignature and finish_reason "stop" with tool calls is mapped to StopToolCall

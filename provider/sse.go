@@ -2,16 +2,11 @@ package provider
 
 import (
 	"bufio"
-	"context"
-	"errors"
+	"encoding/json"
+	"fmt"
 	"io"
 	"iter"
-	"math/rand/v2"
-	"net"
-	"net/http"
-	"strconv"
 	"strings"
-	"time"
 )
 
 // SSEEvent is a single server-sent event.
@@ -64,88 +59,55 @@ func ReadSSE(r io.Reader) iter.Seq2[SSEEvent, error] {
 	}
 }
 
-// DefaultHTTPClient provides a sane default HTTP client with transport timeouts.
-var DefaultHTTPClient = &http.Client{
-	Transport: &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ResponseHeaderTimeout: 60 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		IdleConnTimeout:       90 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	},
-}
-
-// RetryPolicy controls retries of transient HTTP failures.
-type RetryPolicy struct {
-	MaxRetries int           // default 2 when zero; set negative to disable
-	BaseDelay  time.Duration // default 500ms
-	MaxDelay   time.Duration // default 10s
-}
-
-// Do sends the request built by newReq, retrying on network errors, 429 and
-// 5xx responses with exponential backoff (honouring Retry-After). A non-2xx
-// final response is returned as *APIError with the body consumed.
-func (p RetryPolicy) Do(ctx context.Context, client *http.Client, provider string, newReq func(context.Context) (*http.Request, error)) (*http.Response, error) {
-	if client == nil {
-		client = DefaultHTTPClient
+// CheckSSEError inspects an SSE event for mid-stream error payloads and returns
+// a formatted error with prefix if found, or nil if the event is not an error.
+func CheckSSEError(sse SSEEvent, prefix string) error {
+	if sse.Event != "error" && !strings.Contains(sse.Data, `"error"`) {
+		return nil
 	}
-	maxRetries := p.MaxRetries
-	if maxRetries == 0 {
-		maxRetries = 2
-	} else if maxRetries < 0 {
-		maxRetries = 0
+	var payload struct {
+		Type  string `json:"type"`
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    any    `json:"code"`
+		} `json:"error"`
+		Errors []struct {
+			Message string `json:"message"`
+			Code    string `json:"code"`
+		} `json:"errors"`
+		Response *struct {
+			Error *struct {
+				Message string `json:"message"`
+				Type    string `json:"type"`
+			} `json:"error"`
+		} `json:"response"`
 	}
-	base, maxD := p.BaseDelay, p.MaxDelay
-	if base <= 0 {
-		base = 500 * time.Millisecond
-	}
-	if maxD <= 0 {
-		maxD = 10 * time.Second
-	}
-
-	var lastErr error
-	for attempt := 0; ; attempt++ {
-		req, err := newReq(ctx)
-		if err != nil {
-			return nil, err
-		}
-		resp, err := client.Do(req)
-		var wait time.Duration
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
+	if json.Unmarshal([]byte(sse.Data), &payload) == nil {
+		if e := payload.Error; e != nil && e.Message != "" {
+			if e.Type != "" {
+				return fmt.Errorf("%s: %s (%s)", prefix, e.Message, e.Type)
 			}
-			lastErr = err
-		} else if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return resp, nil
-		} else {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			_ = resp.Body.Close()
-			apiErr := &APIError{Provider: provider, StatusCode: resp.StatusCode, Body: string(body)}
-			if !apiErr.Retryable() {
-				return nil, apiErr
+			if e.Code != nil && e.Code != "" && e.Code != float64(0) {
+				return fmt.Errorf("%s: %s (code %v)", prefix, e.Message, e.Code)
 			}
-			lastErr = apiErr
-			if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && s > 0 {
-				wait = time.Duration(s) * time.Second
+			return fmt.Errorf("%s: %s", prefix, e.Message)
+		}
+		if len(payload.Errors) > 0 && payload.Errors[0].Message != "" {
+			if c := payload.Errors[0].Code; c != "" {
+				return fmt.Errorf("%s: %s (code %s)", prefix, payload.Errors[0].Message, c)
 			}
+			return fmt.Errorf("%s: %s", prefix, payload.Errors[0].Message)
 		}
-		if attempt >= maxRetries {
-			return nil, lastErr
+		if payload.Response != nil && payload.Response.Error != nil && payload.Response.Error.Message != "" {
+			return fmt.Errorf("%s: %s", prefix, payload.Response.Error.Message)
 		}
-		if wait == 0 {
-			wait = base << attempt
-			wait += time.Duration(rand.Int64N(int64(wait)/2 + 1))
-		}
-		wait = min(wait, maxD)
-		select {
-		case <-ctx.Done():
-			return nil, errors.Join(ctx.Err(), lastErr)
-		case <-time.After(wait):
+		if payload.Type == "error" {
+			return fmt.Errorf("%s: %s", prefix, sse.Data)
 		}
 	}
+	if sse.Event == "error" {
+		return fmt.Errorf("%s: %s", prefix, sse.Data)
+	}
+	return nil
 }

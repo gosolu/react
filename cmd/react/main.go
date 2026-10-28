@@ -46,78 +46,63 @@ func main() {
 		apiType = provider.APITypeGenerateContent
 	}
 
+	cfg := provider.Config{
+		BaseURL: *baseURLFlag,
+		APIType: apiType,
+	}
+
 	switch strings.ToLower(*providerFlag) {
 	case "openai":
-		apiKey := os.Getenv("OPENAI_API_KEY")
-		if apiKey == "" {
+		cfg.APIKey = os.Getenv("OPENAI_API_KEY")
+		if cfg.APIKey == "" {
 			fmt.Println("Warning: OPENAI_API_KEY environment variable is not set.")
 		}
 		if model == "" {
 			model = "gpt-4o"
 		}
-		p = openai.New(openai.Config{
-			APIKey:  apiKey,
-			BaseURL: *baseURLFlag,
-			APIType: apiType,
-		})
+		p = openai.New(cfg)
 	case "anthropic":
-		apiKey := os.Getenv("ANTHROPIC_API_KEY")
-		if apiKey == "" {
+		cfg.APIKey = os.Getenv("ANTHROPIC_API_KEY")
+		if cfg.APIKey == "" {
 			fmt.Println("Warning: ANTHROPIC_API_KEY environment variable is not set.")
 		}
 		if model == "" {
 			model = "claude-3-5-sonnet-20241022"
 		}
-		p = anthropic.New(anthropic.Config{
-			APIKey:  apiKey,
-			BaseURL: *baseURLFlag,
-		})
+		p = anthropic.New(cfg)
 	case "deepseek":
-		apiKey := os.Getenv("DEEPSEEK_API_KEY")
-		if apiKey == "" {
+		cfg.APIKey = os.Getenv("DEEPSEEK_API_KEY")
+		if cfg.APIKey == "" {
 			fmt.Println("Warning: DEEPSEEK_API_KEY environment variable is not set.")
 		}
 		if model == "" {
 			model = deepseek.ModelChat
 		}
-		p = deepseek.New(deepseek.Config{
-			APIKey:  apiKey,
-			BaseURL: *baseURLFlag,
-			APIType: apiType,
-		})
+		p = deepseek.New(cfg)
 	case "opencode", "opencode-go":
-		apiKey := os.Getenv("OPENCODE_API_KEY")
-		if apiKey == "" {
-			apiKey = os.Getenv("OPENCODE_GO_API_KEY")
+		cfg.APIKey = os.Getenv("OPENCODE_API_KEY")
+		if cfg.APIKey == "" {
+			cfg.APIKey = os.Getenv("OPENCODE_GO_API_KEY")
 		}
-		if apiKey == "" {
+		if cfg.APIKey == "" {
 			fmt.Println("Warning: OPENCODE_API_KEY environment variable is not set.")
 		}
 		if model == "" {
 			model = opencode.ModelDeepSeekV4Pro
 		}
-		p = opencode.New(opencode.Config{
-			APIKey:    apiKey,
-			BaseURL:   *baseURLFlag,
-			APIType:   apiType,
-			SessionID: *sessionFlag,
-		})
+		p = opencode.New(cfg)
 	case "gemini":
-		apiKey := os.Getenv("GEMINI_API_KEY")
-		if apiKey == "" {
-			apiKey = os.Getenv("GOOGLE_API_KEY")
+		cfg.APIKey = os.Getenv("GEMINI_API_KEY")
+		if cfg.APIKey == "" {
+			cfg.APIKey = os.Getenv("GOOGLE_API_KEY")
 		}
-		if apiKey == "" {
+		if cfg.APIKey == "" {
 			fmt.Println("Warning: GEMINI_API_KEY (or GOOGLE_API_KEY) environment variable is not set.")
 		}
 		if model == "" {
 			model = gemini.ModelGemini38Flash
 		}
-		p = gemini.New(gemini.Config{
-			APIKey:  apiKey,
-			BaseURL: *baseURLFlag,
-			APIType: apiType,
-		})
+		p = gemini.New(cfg)
 	case "mock":
 		if model == "" {
 			model = "mock-model"

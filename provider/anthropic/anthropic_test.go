@@ -6,21 +6,36 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/gosolu/react"
+	"github.com/gosolu/react/provider"
 )
+
+type stubClient struct {
+	postFunc   func(ctx context.Context, url string, headers map[string]string, body io.Reader) (io.ReadCloser, error)
+	streamFunc func(ctx context.Context, url string, headers map[string]string, body io.Reader) iter.Seq2[provider.SSEEvent, error]
+}
+
+func (s *stubClient) Post(ctx context.Context, url string, headers map[string]string, body io.Reader) (io.ReadCloser, error) {
+	return s.postFunc(ctx, url, headers, body)
+}
+
+func (s *stubClient) Stream(ctx context.Context, url string, headers map[string]string, body io.Reader) iter.Seq2[provider.SSEEvent, error] {
+	return s.streamFunc(ctx, url, headers, body)
+}
 
 func TestAnthropicGenerate(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("x-api-key") != "ant-key" {
 			t.Errorf("missing or bad x-api-key: %v", r.Header.Get("x-api-key"))
 		}
-		if r.Header.Get("anthropic-version") == "" {
-			t.Errorf("missing anthropic-version header")
+		if r.Header.Get("anthropic-version") != DefaultVersion {
+			t.Errorf("unexpected anthropic-version header: %q", r.Header.Get("anthropic-version"))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintln(w, `{
@@ -40,7 +55,7 @@ func TestAnthropicGenerate(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := New(Config{
+	p := New(provider.Config{
 		APIKey:  "ant-key",
 		BaseURL: ts.URL,
 	})
@@ -89,13 +104,13 @@ event: message_stop
 data: {"type":"message_stop"}
 
 `
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = fmt.Fprint(w, sseData)
 	}))
 	defer ts.Close()
 
-	p := New(Config{
+	p := New(provider.Config{
 		APIKey:  "ant-key",
 		BaseURL: ts.URL,
 	})
@@ -126,18 +141,12 @@ data: {"type":"message_stop"}
 	}
 }
 
-type roundTripperFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
-	return f(r)
-}
-
 func TestAnthropicThinkingAndTurnCollapse(t *testing.T) {
 	var capturedBody map[string]any
 
-	mockClient := &http.Client{
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+	mockClient := &stubClient{
+		postFunc: func(_ context.Context, _ string, _ map[string]string, body io.Reader) (io.ReadCloser, error) {
+			_ = json.NewDecoder(body).Decode(&capturedBody)
 			respJSON := `{
 				"id": "msg_456",
 				"type": "message",
@@ -154,20 +163,15 @@ func TestAnthropicThinkingAndTurnCollapse(t *testing.T) {
 					"cache_read_input_tokens": 60
 				}
 			}`
-			return &http.Response{
-				StatusCode: 200,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(strings.NewReader(respJSON)),
-			}, nil
-		}),
+			return io.NopCloser(strings.NewReader(respJSON)), nil
+		},
 	}
 
-	p := New(Config{
-		APIKey:     "ant-key",
-		HTTPClient: mockClient,
+	p := New(provider.Config{
+		APIKey: "ant-key",
+		Client: mockClient,
 	})
 
-	// Send an assistant message with thinking + 2 tool calls, followed by 2 tool results (one with an image)
 	req := &react.Request{
 		Model: "claude-3-7-sonnet",
 		Messages: []react.Message{
@@ -263,68 +267,11 @@ func TestAnthropicThinkingAndTurnCollapse(t *testing.T) {
 	}
 }
 
-func TestAnthropicPromptCache(t *testing.T) {
-	var capturedBody map[string]any
-
-	mockClient := &http.Client{
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
-			respJSON := `{"id":"m1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}]}`
-			return &http.Response{
-				StatusCode: 200,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(strings.NewReader(respJSON)),
-			}, nil
-		}),
-	}
-
-	p := New(Config{
-		APIKey:      "ant-key",
-		PromptCache: true,
-		HTTPClient:  mockClient,
-	})
-
-	req := &react.Request{
-		Model:    "claude-3-5-sonnet",
-		System:   "You are an assistant.",
-		Messages: []react.Message{react.UserText("hello")},
-		Tools: []react.ToolSpec{
-			{Name: "tool1", Description: "d1"},
-			{Name: "tool2", Description: "d2"},
-		},
-	}
-
-	_, err := p.Generate(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// System should have cache_control
-	sysBlocks, ok := capturedBody["system"].([]any)
-	if !ok || len(sysBlocks) == 0 {
-		t.Fatalf("expected system array with cache_control, got %+v", capturedBody["system"])
-	}
-	sysFirst := sysBlocks[0].(map[string]any)
-	if sysFirst["cache_control"] == nil {
-		t.Errorf("expected system cache_control, got nil")
-	}
-
-	// Last tool should have cache_control
-	tools, ok := capturedBody["tools"].([]any)
-	if !ok || len(tools) != 2 {
-		t.Fatalf("expected 2 tools, got %+v", capturedBody["tools"])
-	}
-	tool2 := tools[1].(map[string]any)
-	if tool2["cache_control"] == nil {
-		t.Errorf("expected last tool to have cache_control, got nil")
-	}
-}
-
 func TestAnthropicImageURL(t *testing.T) {
 	var capturedBody map[string]any
-	mockClient := &http.Client{
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			b, _ := io.ReadAll(r.Body)
+	mockClient := &stubClient{
+		postFunc: func(_ context.Context, _ string, _ map[string]string, body io.Reader) (io.ReadCloser, error) {
+			b, _ := io.ReadAll(body)
 			_ = json.Unmarshal(b, &capturedBody)
 			resp := messagesResponse{
 				ID:         "msg_img",
@@ -334,17 +281,13 @@ func TestAnthropicImageURL(t *testing.T) {
 				StopReason: "end_turn",
 			}
 			data, _ := json.Marshal(resp)
-			return &http.Response{
-				StatusCode: 200,
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader(string(data))),
-			}, nil
-		}),
+			return io.NopCloser(strings.NewReader(string(data))), nil
+		},
 	}
 
-	p := New(Config{
-		APIKey:     "ant-key",
-		HTTPClient: mockClient,
+	p := New(provider.Config{
+		APIKey: "ant-key",
+		Client: mockClient,
 	})
 
 	userMsg := react.Message{
@@ -404,16 +347,12 @@ data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"a
 event: error
 data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}
 `
-	p := New(Config{
+	p := New(provider.Config{
 		APIKey: "ant-key",
-		HTTPClient: &http.Client{
-			Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-				return &http.Response{
-					StatusCode: 200,
-					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-					Body:       io.NopCloser(strings.NewReader(sseData)),
-				}, nil
-			}),
+		Client: &stubClient{
+			streamFunc: func(_ context.Context, _ string, _ map[string]string, _ io.Reader) iter.Seq2[provider.SSEEvent, error] {
+				return provider.ReadSSE(strings.NewReader(sseData))
+			},
 		},
 	})
 
@@ -443,16 +382,12 @@ data: {"type":"content_block_start","index":0,"content_block":{"type":"text","te
 event: content_block_delta
 data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Incomplete response"}}
 `
-	p := New(Config{
+	p := New(provider.Config{
 		APIKey: "ant-key",
-		HTTPClient: &http.Client{
-			Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-				return &http.Response{
-					StatusCode: 200,
-					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-					Body:       io.NopCloser(strings.NewReader(sseData)),
-				}, nil
-			}),
+		Client: &stubClient{
+			streamFunc: func(_ context.Context, _ string, _ map[string]string, _ io.Reader) iter.Seq2[provider.SSEEvent, error] {
+				return provider.ReadSSE(strings.NewReader(sseData))
+			},
 		},
 	})
 
