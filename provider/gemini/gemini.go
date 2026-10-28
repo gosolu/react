@@ -1,6 +1,5 @@
-// Package gemini implements a Google Gemini react.Provider.
-// It supports the standard Gemini Interactions API (/v1beta/interactions) by default,
-// as well as the legacy native generateContent API when explicitly configured.
+// Package gemini implements a Google Gemini react.Provider using
+// the Gemini Interactions API (/v1beta/interactions).
 package gemini
 
 import (
@@ -58,13 +57,6 @@ func NewChatCompletions(cfg provider.Config) *Provider {
 	return New(cfg)
 }
 
-// NewGenerateContent creates a new Gemini provider explicitly configured to use
-// the legacy native generateContent API (/models/{model}:generateContent).
-func NewGenerateContent(cfg provider.Config) *Provider {
-	cfg.APIType = provider.APITypeGenerateContent
-	return New(cfg)
-}
-
 // Name implements react.Provider.
 func (p *Provider) Name() string {
 	return "gemini"
@@ -72,17 +64,11 @@ func (p *Provider) Name() string {
 
 // Generate implements react.Provider (non-streaming).
 func (p *Provider) Generate(ctx context.Context, req *react.Request) (*react.Response, error) {
-	if p.cfg.APIType == provider.APITypeGenerateContent {
-		return p.generateNative(ctx, req)
-	}
 	return p.generateInteractions(ctx, req)
 }
 
 // Stream implements react.Provider (server-sent events).
 func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[react.StreamEvent, error] {
-	if p.cfg.APIType == provider.APITypeGenerateContent {
-		return p.streamNative(ctx, req)
-	}
 	return p.streamInteractions(ctx, req)
 }
 

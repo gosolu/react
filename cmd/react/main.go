@@ -42,8 +42,6 @@ func main() {
 		apiType = provider.APITypeResponses
 	} else if strings.EqualFold(*apiFlag, "interactions") || strings.EqualFold(*apiFlag, "interaction") {
 		apiType = provider.APITypeInteractions
-	} else if strings.EqualFold(*apiFlag, "generate_content") || strings.EqualFold(*apiFlag, "generateContent") {
-		apiType = provider.APITypeGenerateContent
 	}
 
 	cfg := provider.Config{

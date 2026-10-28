@@ -35,9 +35,6 @@ const (
 
 	// APITypeInteractions routes requests to the Google Gemini Interactions API (/interactions).
 	APITypeInteractions APIType = "interactions"
-
-	// APITypeGenerateContent routes requests to the legacy Gemini generateContent endpoint.
-	APITypeGenerateContent APIType = "generate_content"
 )
 
 // APIError is returned when a provider responds with a non-success HTTP status.
