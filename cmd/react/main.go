@@ -20,6 +20,7 @@ import (
 	"github.com/gosolu/react/provider/mock"
 	"github.com/gosolu/react/provider/openai"
 	"github.com/gosolu/react/provider/opencode"
+	"github.com/gosolu/react/tools"
 )
 
 func main() {
@@ -29,6 +30,7 @@ func main() {
 	baseURLFlag := flag.String("base-url", "", "Custom BaseURL (e.g. for Ollama / vLLM / local AI)")
 	streamFlag := flag.Bool("stream", true, "Enable streaming responses")
 	skillsDirFlag := flag.String("skills", "", "Path to skills directory")
+	toolsFlag := flag.Bool("tools", true, "Register shell/file tools (read_file, write_file, exec)")
 	sessionFlag := flag.String("session", "default-repl", "Session ID")
 	storeDirFlag := flag.String("store-dir", "", "Directory to persist conversation sessions across CLI restarts")
 	systemPromptFlag := flag.String("system", "You are a helpful and capable agent assistant.", "Base system prompt")
@@ -162,6 +164,10 @@ func main() {
 
 	if *skillsDirFlag != "" {
 		opts = append(opts, react.WithSkillDirs(*skillsDirFlag))
+	}
+
+	if *toolsFlag {
+		opts = append(opts, react.WithTools(tools.All()...))
 	}
 
 	a, err := react.New(opts...)
