@@ -496,6 +496,12 @@ func (a *Agent) runTools(ctx context.Context, rc *RunContext, reg *ToolRegistry,
 	}
 	ex := ToolExecutor{MaxParallel: a.cfg.maxParallel}
 	results := ex.Run(ctx, calls, isSeq, pipeline, func(i int, cr *ToolCallResult) {
+		// Scrub before the result is emitted, truncated, or persisted.
+		// This runs after handleCall (including AfterTool hooks), so a
+		// hook rewrite cannot smuggle a secret past the scrub.
+		if a.cfg.scrubToolSecrets {
+			cr.Result = ScrubToolResult(cr.Result)
+		}
 		content, truncated := truncateParts(cr.Result.Content, a.toolOutputLimit(reg, cr.Call.Name))
 		cr.Result.Content = content
 		cr.Result.Truncated = truncated
@@ -508,6 +514,13 @@ func (a *Agent) runTools(ctx context.Context, rc *RunContext, reg *ToolRegistry,
 	msgs := make([]Message, len(results))
 	for i, cr := range results {
 		content := cr.Result.Content
+		// Scrub again here: AfterToolBatch hooks run between onDone and
+		// this point and could have reintroduced secret-looking text.
+		// ScrubSecrets is idempotent, so the second pass is a no-op when
+		// the first pass already scrubbed.
+		if a.cfg.scrubToolSecrets {
+			content = ScrubToolResult(cr.Result).Content
+		}
 		if len(content) == 0 {
 			content = []Part{TextPart("(no output)")}
 		}
