@@ -207,6 +207,19 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 			_ = activeReg.Register(t)
 		}
 	}
+	// Subtractive allowlist: filter after merging so run tools are
+	// scoped exactly like agent tools. Filtering here (rather than only
+	// at the model request) also blocks execution of a disallowed tool
+	// if one is somehow called, because runTools uses activeReg.
+	if rcfg.allowedToolsSet {
+		filtered := NewToolRegistry()
+		for _, t := range activeReg.List() {
+			if rcfg.toolAllowed(t.Spec().Name) {
+				_ = filtered.Register(t)
+			}
+		}
+		activeReg = filtered
+	}
 	specs := activeReg.Specs()
 
 	emit(Event{Type: EventRunStart})

@@ -162,6 +162,29 @@ type runConfig struct {
 	toolChoice string
 	tools      []Tool
 	onEvent    func(Event)
+
+	// allowedTools restricts the run to the named tools when
+	// allowedToolsSet is true. It is subtractive only: it never adds
+	// tools, it only hides (and blocks) tools the agent already has.
+	// An empty list with allowedToolsSet true means no tools at all.
+	// This is how a delegating parent scopes a sub-agent; the filter
+	// applies to the agent's tools, run tools, and skill tools alike,
+	// because all of them flow through the same active registry.
+	allowedTools    []string
+	allowedToolsSet bool
+}
+
+// toolAllowed reports whether name survives the run's allowlist.
+func (r *runConfig) toolAllowed(name string) bool {
+	if !r.allowedToolsSet {
+		return true
+	}
+	for _, n := range r.allowedTools {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // WithInputParts appends extra content (e.g. images) to the user message.
@@ -178,6 +201,20 @@ func WithRunModel(m string) RunOption { return func(r *runConfig) { r.model = m 
 
 // WithToolChoice sets the tool choice for this run (auto, none, required, or a tool name).
 func WithToolChoice(choice string) RunOption { return func(r *runConfig) { r.toolChoice = choice } }
+
+// WithAllowedTools restricts this run to the named tools. It is
+// subtractive: names not present in the agent's registry are ignored,
+// and tools outside the list are hidden from the model (they never
+// appear in the request's tool specs) and rejected at execution time
+// ("unknown tool") if a call for one arrives anyway. With no names, the
+// run has no tools. Without this option, a run sees the full registry.
+// See Agent.AsToolWithAllowedTools for the delegation form.
+func WithAllowedTools(names ...string) RunOption {
+	return func(r *runConfig) {
+		r.allowedTools = append([]string(nil), names...)
+		r.allowedToolsSet = true
+	}
+}
 
 // WithRunTools injects additional tools for this specific run.
 func WithRunTools(ts ...Tool) RunOption {

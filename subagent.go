@@ -39,7 +39,23 @@ type subAgentInput struct {
 // sub-agent's final answer. The sub-agent's events are forwarded to the
 // parent's event stream with Depth incremented, and nesting is bounded by
 // WithMaxDepth.
+//
+// The child runs with the agent's full toolset. For a scoped delegation,
+// use AsToolWithAllowedTools.
 func (a *Agent) AsTool(name, description string) Tool {
+	return a.asTool(name, description, nil, false)
+}
+
+// AsToolWithAllowedTools is AsTool with a subtractive per-delegation
+// allowlist: the child run sees only the named tools, and calls to any
+// other tool are rejected. With no names, the child has no tools at all.
+// Names that the agent does not have are ignored. Unlike WithRunTools,
+// which is additive only, this can only narrow the child's toolset.
+func (a *Agent) AsToolWithAllowedTools(name, description string, allowed ...string) Tool {
+	return a.asTool(name, description, allowed, true)
+}
+
+func (a *Agent) asTool(name, description string, allowed []string, restrict bool) Tool {
 	return NewTool(name, description, func(ctx context.Context, in subAgentInput) (string, error) {
 		if strings.TrimSpace(in.Task) == "" {
 			return "", errors.New("task is required")
@@ -59,6 +75,9 @@ func (a *Agent) AsTool(name, description string) Tool {
 		var opts []RunOption
 		if parent := emitterFrom(ctx); parent != nil {
 			opts = append(opts, WithEventHandler(func(ev Event) { parent(ev) }))
+		}
+		if restrict {
+			opts = append(opts, WithAllowedTools(allowed...))
 		}
 		res, err := a.Run(cctx, "", in.Task, opts...)
 		if err != nil {
