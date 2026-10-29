@@ -23,6 +23,21 @@ func ChainToolMiddleware(h ToolHandler, mws ...ToolMiddleware) ToolHandler {
 	return h
 }
 
+// RedactSecretsMiddleware scrubs secret-looking material from tool results
+// after the tool runs. It is a ToolMiddleware, so it runs before AfterTool
+// hooks: a hook that rewrites a result afterwards can reintroduce secrets,
+// which is why agents should additionally enable WithScrubToolSecrets for
+// the post-hook, pre-persistence scrub in the run loop. See ScrubSecrets
+// for the patterns covered.
+func RedactSecretsMiddleware() ToolMiddleware {
+	return func(next ToolHandler) ToolHandler {
+		return func(ctx context.Context, call ToolCall) (ToolResult, error) {
+			res, err := next(ctx, call)
+			return ScrubToolResult(res), err
+		}
+	}
+}
+
 // TimeoutMiddleware bounds every call to d.
 func TimeoutMiddleware(d time.Duration) ToolMiddleware {
 	return func(next ToolHandler) ToolHandler {

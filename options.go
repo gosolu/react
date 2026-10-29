@@ -34,6 +34,11 @@ type config struct {
 	strictSkills      bool
 	maxToolOutput     int
 	persistCompaction bool
+	// scrubToolSecrets, when set via WithScrubToolSecrets, scrubs tool
+	// results after AfterTool hooks and before the result enters model
+	// history or the session store. It is off by default so existing
+	// behaviour is unchanged unless the caller opts in.
+	scrubToolSecrets bool
 }
 
 // WithName sets the agent name (shown in events; default "agent").
@@ -151,6 +156,14 @@ func WithMaxToolOutput(bytes int) Option { return func(c *config) { c.maxToolOut
 
 // WithPersistCompaction enables saving compacted history back to Store when Fit shrinks the history.
 func WithPersistCompaction() Option { return func(c *config) { c.persistCompaction = true } }
+
+// WithScrubToolSecrets enables post-hook scrubbing of tool results: after
+// AfterTool hooks run and before the result enters model history or the
+// session store, every text part is passed through ScrubSecrets. This is
+// the interception point that catches secrets a tool — or a hook rewrite —
+// embedded in output, including base64-encoded ones. Without this option
+// (or RedactSecretsMiddleware), tool output is stored verbatim.
+func WithScrubToolSecrets() Option { return func(c *config) { c.scrubToolSecrets = true } }
 
 // RunOption customises a single run.
 type RunOption func(*runConfig)
