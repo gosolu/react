@@ -45,6 +45,9 @@ func (a *Agent) Validate() error {
 	if err := validateBudget(a.cfg.budget); err != nil {
 		errs = append(errs, err)
 	}
+	if a.cfg.responseFormat != nil && len(a.cfg.responseFormat.Schema) > 0 && !json.Valid(a.cfg.responseFormat.Schema) {
+		errs = append(errs, errors.New("agent: response format has an invalid JSON schema"))
+	}
 	if a.skills != nil {
 		if err := a.skills.Validate(); err != nil {
 			errs = append(errs, err)

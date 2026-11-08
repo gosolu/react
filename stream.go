@@ -27,15 +27,16 @@ const (
 
 // StreamEvent is a single incremental event from a streaming provider.
 type StreamEvent struct {
-	Type       StreamEventType
-	Text       string
-	Signature  string // cryptographic signature for reasoning (Anthropic)
-	Index      int
-	ToolCallID string
-	ToolName   string
-	ArgsDelta  string
-	Usage      *Usage
-	StopReason StopReason
+	Type             StreamEventType
+	Text             string
+	Signature        string // cryptographic signature for reasoning (Anthropic)
+	RedactedThinking string // encrypted redacted thinking payload (Anthropic)
+	Index            int
+	ToolCallID       string
+	ToolName         string
+	ArgsDelta        string
+	Usage            *Usage
+	StopReason       StopReason
 }
 
 type toolAcc struct {
@@ -47,13 +48,14 @@ type toolAcc struct {
 // Accumulator folds a sequence of StreamEvents into a Response.
 // The zero value is ready to use.
 type Accumulator struct {
-	text         strings.Builder
-	reasoning    strings.Builder
-	reasoningSig strings.Builder
-	calls        []*toolAcc
-	byIndex      map[int]*toolAcc
-	usage        Usage
-	stop         StopReason
+	text             strings.Builder
+	reasoning        strings.Builder
+	reasoningSig     strings.Builder
+	redactedThinking []string
+	calls            []*toolAcc
+	byIndex          map[int]*toolAcc
+	usage            Usage
+	stop             StopReason
 }
 
 // Add applies an event.
@@ -65,6 +67,9 @@ func (a *Accumulator) Add(ev StreamEvent) {
 		a.reasoning.WriteString(ev.Text)
 		if ev.Signature != "" {
 			a.reasoningSig.WriteString(ev.Signature)
+		}
+		if ev.RedactedThinking != "" {
+			a.redactedThinking = append(a.redactedThinking, ev.RedactedThinking)
 		}
 	case StreamToolCallStart:
 		c := a.call(ev.Index)
@@ -129,6 +134,9 @@ func (a *Accumulator) Response() *Response {
 		Reasoning:          a.reasoning.String(),
 		ReasoningSignature: a.reasoningSig.String(),
 	}
+	if len(a.redactedThinking) > 0 {
+		msg.RedactedThinking = append([]string(nil), a.redactedThinking...)
+	}
 	if t := a.text.String(); t != "" {
 		msg.Content = []Part{TextPart(t)}
 	}
@@ -176,6 +184,13 @@ func StreamResponse(resp *Response, chunkSize int) iter.Seq2[StreamEvent, error]
 					if !yield(StreamEvent{Type: StreamReasoningDelta, Text: c, Signature: chunkSig}, nil) {
 						return
 					}
+				}
+			}
+		}
+		for _, rt := range resp.Message.RedactedThinking {
+			if rt != "" {
+				if !yield(StreamEvent{Type: StreamReasoningDelta, RedactedThinking: rt}, nil) {
+					return
 				}
 			}
 		}

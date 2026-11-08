@@ -66,6 +66,10 @@ type Message struct {
 	// ToolCalls is set on assistant messages that request tool execution.
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 
+	// RedactedThinking holds encrypted/redacted thinking payloads (e.g. Anthropic redacted_thinking blocks)
+	// that must be echoed back unmodified in subsequent turns.
+	RedactedThinking []string `json:"redacted_thinking,omitempty"`
+
 	// ToolCallID and Name are set on tool-result messages (Role == RoleTool).
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	Name       string `json:"name,omitempty"`
@@ -102,6 +106,9 @@ func (m Message) Clone() Message {
 			c.Arguments = append(json.RawMessage(nil), c.Arguments...)
 			out.ToolCalls[i] = c
 		}
+	}
+	if m.RedactedThinking != nil {
+		out.RedactedThinking = append([]string(nil), m.RedactedThinking...)
 	}
 	return out
 }

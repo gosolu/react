@@ -75,8 +75,12 @@ func TestBuildResponsesRequestBody(t *testing.T) {
 	}
 
 	asstMsg := input[1].(map[string]any)
-	if asstMsg["role"] != "assistant" || asstMsg["content"] != "I will run a command" {
+	if asstMsg["type"] != "message" || asstMsg["role"] != "assistant" {
 		t.Errorf("unexpected assistant msg: %+v", asstMsg)
+	}
+	asstContent, ok := asstMsg["content"].([]map[string]any)
+	if !ok || len(asstContent) != 1 || asstContent[0]["type"] != "output_text" || asstContent[0]["text"] != "I will run a command" {
+		t.Errorf("unexpected assistant content: %+v", asstMsg["content"])
 	}
 
 	tcItem := input[2].(map[string]any)
@@ -236,5 +240,75 @@ data: {"type":"response.output_text.delta","delta":"Half finished"}
 	}
 	if !errors.Is(errFound, io.ErrUnexpectedEOF) {
 		t.Fatalf("expected io.ErrUnexpectedEOF, got %v", errFound)
+	}
+}
+
+func TestBuildResponsesRequestBody_ReasoningMultimodalToolAndSchema(t *testing.T) {
+	strict := true
+	req := &react.Request{
+		Model: "gpt-4o",
+		Messages: []react.Message{
+			react.UserText("check screenshot"),
+			{
+				Role:      react.RoleAssistant,
+				Reasoning: "Prior reasoning that has no item ID",
+				Content:   []react.Part{react.TextPart("Taking screenshot")},
+				ToolCalls: []react.ToolCall{
+					{ID: "call_img", Name: "screenshot", Arguments: []byte(`{}`)},
+				},
+			},
+			{
+				Role:       react.RoleTool,
+				ToolCallID: "call_img",
+				Content: []react.Part{
+					react.TextPart("captured:"),
+					react.ImageURLPart("https://example.com/screen.png"),
+				},
+			},
+		},
+		ResponseFormat: &react.ResponseFormat{
+			Type:   "json_schema",
+			Name:   "screen_analysis",
+			Strict: &strict,
+			Schema: []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`),
+		},
+	}
+
+	body := BuildResponsesRequestBody(req, false)
+
+	// 1. Stateless reasoning without item ID must NOT be emitted in input
+	input := body["input"].([]any)
+	if len(input) != 4 {
+		t.Fatalf("expected 4 input items (user, assistant message, function_call, function_call_output), got %d: %+v", len(input), input)
+	}
+	for _, item := range input {
+		m := item.(map[string]any)
+		if m["type"] == "reasoning" {
+			t.Fatalf("unexpected stateless reasoning input item without ID: %+v", m)
+		}
+	}
+
+	// 2. Multimodal tool output must be serialized as a string for function_call_output
+	toolOut := input[3].(map[string]any)
+	outStr, ok := toolOut["output"].(string)
+	if !ok {
+		t.Fatalf("expected function_call_output.output to be string, got %T: %+v", toolOut["output"], toolOut["output"])
+	}
+	if !strings.Contains(outStr, "captured:") || !strings.Contains(outStr, "https://example.com/screen.png") {
+		t.Errorf("unexpected tool output string: %q", outStr)
+	}
+
+	// 3. Structured output format in text.format
+	textCfg, ok := body["text"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected text config in body, got %+v", body["text"])
+	}
+	formatCfg, ok := textCfg["format"].(map[string]any)
+	if !ok || formatCfg["type"] != "json_schema" || formatCfg["name"] != "screen_analysis" {
+		t.Fatalf("unexpected text.format: %+v", formatCfg)
+	}
+	schemaMap := formatCfg["schema"].(map[string]any)
+	if schemaMap["additionalProperties"] != false {
+		t.Errorf("expected additionalProperties: false, got %+v", schemaMap)
 	}
 }

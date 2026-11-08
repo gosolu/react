@@ -301,6 +301,61 @@ func TestStreamResponseReasoningSignature(t *testing.T) {
 	}
 }
 
+func TestStructuredOutputsOptions(t *testing.T) {
+	type MathAnswer struct {
+		Result      int    `json:"result" desc:"The final numeric result"`
+		Explanation string `json:"explanation" desc:"Step-by-step explanation"`
+	}
+
+	var capturedAgentFormat *react.ResponseFormat
+	var capturedRunFormat *react.ResponseFormat
+
+	p := mock.NewFunc(func(ctx context.Context, req *react.Request) (*react.Response, error) {
+		if capturedAgentFormat == nil {
+			capturedAgentFormat = req.ResponseFormat
+		} else {
+			capturedRunFormat = req.ResponseFormat
+		}
+		return &react.Response{
+			Message:    react.AssistantText(`{"result":4,"explanation":"2+2=4"}`),
+			StopReason: react.StopEnd,
+		}, nil
+	})
+
+	a, err := react.New(
+		react.WithProvider(p),
+		react.WithResponseSchema[MathAnswer]("", "Math answer output"),
+	)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	// 1. Run using agent-level default ResponseSchema
+	res, err := a.Run(context.Background(), "", "What is 2+2?")
+	if err != nil {
+		t.Fatalf("Run 1 failed: %v", err)
+	}
+	if capturedAgentFormat == nil {
+		t.Fatal("expected agent-level ResponseFormat to be set on Request")
+	}
+	if capturedAgentFormat.Type != "json_schema" || capturedAgentFormat.Name != "MathAnswer" {
+		t.Fatalf("unexpected ResponseFormat: %+v", capturedAgentFormat)
+	}
+	var ans MathAnswer
+	if err := json.Unmarshal([]byte(res.Output), &ans); err != nil || ans.Result != 4 {
+		t.Fatalf("failed to unmarshal structured output: %v, %+v", err, ans)
+	}
+
+	// 2. Run overriding with WithJSONObject
+	_, err = a.Run(context.Background(), "", "What is 2+2?", react.WithJSONObject())
+	if err != nil {
+		t.Fatalf("Run 2 failed: %v", err)
+	}
+	if capturedRunFormat == nil || capturedRunFormat.Type != "json_object" {
+		t.Fatalf("expected run-level json_object override, got %+v", capturedRunFormat)
+	}
+}
+
 func TestStreamToolResult_DataRace(t *testing.T) {
 	ctx := context.Background()
 

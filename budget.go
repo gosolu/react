@@ -345,6 +345,9 @@ func estimateRequestTokens(req *Request) int {
 	for _, t := range req.Tools {
 		n += EstimateText(t.Name) + EstimateText(t.Description) + EstimateText(string(t.InputSchema))
 	}
+	if req.ResponseFormat != nil && len(req.ResponseFormat.Schema) > 0 {
+		n += EstimateText(req.ResponseFormat.Name) + EstimateText(req.ResponseFormat.Description) + EstimateText(string(req.ResponseFormat.Schema))
+	}
 	if req.MaxTokens > 0 {
 		n += req.MaxTokens
 	}

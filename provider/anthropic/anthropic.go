@@ -63,8 +63,14 @@ func (p *Provider) Generate(ctx context.Context, req *react.Request) (*react.Res
 	for _, block := range msgResp.Content {
 		switch block.Type {
 		case "thinking":
-			msg.Reasoning = block.Thinking
-			msg.ReasoningSignature = block.Signature
+			msg.Reasoning += block.Thinking
+			if block.Signature != "" {
+				msg.ReasoningSignature = block.Signature
+			}
+		case "redacted_thinking":
+			if block.Data != "" {
+				msg.RedactedThinking = append(msg.RedactedThinking, block.Data)
+			}
 		case "text":
 			msg.Content = append(msg.Content, react.TextPart(block.Text))
 		case "tool_use":
@@ -129,14 +135,26 @@ func (p *Provider) Stream(ctx context.Context, req *react.Request) iter.Seq2[rea
 				}
 			case "content_block_start":
 				var blockStart contentBlockStartEvent
-				if json.Unmarshal([]byte(sse.Data), &blockStart) == nil && blockStart.ContentBlock.Type == "tool_use" {
-					if !yield(react.StreamEvent{
-						Type:       react.StreamToolCallStart,
-						Index:      blockStart.Index,
-						ToolCallID: blockStart.ContentBlock.ID,
-						ToolName:   blockStart.ContentBlock.Name,
-					}, nil) {
-						return
+				if json.Unmarshal([]byte(sse.Data), &blockStart) == nil {
+					switch blockStart.ContentBlock.Type {
+					case "tool_use":
+						if !yield(react.StreamEvent{
+							Type:       react.StreamToolCallStart,
+							Index:      blockStart.Index,
+							ToolCallID: blockStart.ContentBlock.ID,
+							ToolName:   blockStart.ContentBlock.Name,
+						}, nil) {
+							return
+						}
+					case "redacted_thinking":
+						if blockStart.ContentBlock.Data != "" {
+							if !yield(react.StreamEvent{
+								Type:             react.StreamReasoningDelta,
+								RedactedThinking: blockStart.ContentBlock.Data,
+							}, nil) {
+								return
+							}
+						}
 					}
 				}
 			case "content_block_delta":
@@ -216,6 +234,11 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 	if req.Temperature != nil {
 		body["temperature"] = *req.Temperature
 	}
+	if req.ResponseFormat != nil && body["output_config"] == nil {
+		if oc := buildAnthropicOutputConfig(req.ResponseFormat); oc != nil {
+			body["output_config"] = oc
+		}
+	}
 
 	var systemParts []string
 	if req.System != "" {
@@ -234,15 +257,20 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 			})
 		case react.RoleAssistant:
 			var content []map[string]any
-			if m.Reasoning != "" {
-				thinkingBlock := map[string]any{
-					"type":     "thinking",
-					"thinking": m.Reasoning,
+			if m.Reasoning != "" && m.ReasoningSignature != "" {
+				content = append(content, map[string]any{
+					"type":      "thinking",
+					"thinking":  m.Reasoning,
+					"signature": m.ReasoningSignature,
+				})
+			}
+			for _, rt := range m.RedactedThinking {
+				if rt != "" {
+					content = append(content, map[string]any{
+						"type": "redacted_thinking",
+						"data": rt,
+					})
 				}
-				if m.ReasoningSignature != "" {
-					thinkingBlock["signature"] = m.ReasoningSignature
-				}
-				content = append(content, thinkingBlock)
 			}
 			for _, part := range m.Content {
 				if part.Type == react.PartText && part.Text != "" {
@@ -325,6 +353,52 @@ func (p *Provider) buildRequestBody(req *react.Request, stream bool) map[string]
 	return body
 }
 
+func buildAnthropicOutputConfig(rf *react.ResponseFormat) map[string]any {
+	typ := rf.Type
+	if typ == "" && len(rf.Schema) > 0 {
+		typ = "json_schema"
+	}
+	if typ == "json_schema" && len(rf.Schema) > 0 {
+		var schema map[string]any
+		if json.Unmarshal(rf.Schema, &schema) == nil {
+			ensureAnthropicStrictSchema(schema)
+			return map[string]any{
+				"format": map[string]any{
+					"type":   "json_schema",
+					"schema": schema,
+				},
+			}
+		}
+	}
+	if typ == "json_object" {
+		return map[string]any{
+			"format": map[string]any{
+				"type":   "json_schema",
+				"schema": map[string]any{"type": "object"},
+			},
+		}
+	}
+	return nil
+}
+
+func ensureAnthropicStrictSchema(m map[string]any) {
+	if m["type"] == "object" {
+		if _, exists := m["additionalProperties"]; !exists {
+			m["additionalProperties"] = false
+		}
+	}
+	if props, ok := m["properties"].(map[string]any); ok {
+		for _, v := range props {
+			if sub, ok := v.(map[string]any); ok {
+				ensureAnthropicStrictSchema(sub)
+			}
+		}
+	}
+	if items, ok := m["items"].(map[string]any); ok {
+		ensureAnthropicStrictSchema(items)
+	}
+}
+
 func buildAnthropicContentBlocks(parts []react.Part) []map[string]any {
 	out := make([]map[string]any, 0, len(parts))
 	for _, p := range parts {
@@ -397,6 +471,7 @@ type contentBlock struct {
 	Text      string          `json:"text,omitempty"`
 	Thinking  string          `json:"thinking,omitempty"`
 	Signature string          `json:"signature,omitempty"`
+	Data      string          `json:"data,omitempty"`
 	ID        string          `json:"id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`

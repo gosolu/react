@@ -29,6 +29,9 @@ func BuildChatCompletionsRequestBody(req *react.Request, stream bool) map[string
 	if req.Temperature != nil {
 		body["temperature"] = *req.Temperature
 	}
+	if req.ResponseFormat != nil && body["response_format"] == nil {
+		body["response_format"] = buildChatResponseFormat(req.ResponseFormat)
+	}
 
 	var messages []map[string]any
 	if req.System != "" {
@@ -123,6 +126,63 @@ func BuildChatCompletionsRequestBody(req *react.Request, stream bool) map[string
 	}
 
 	return body
+}
+
+func buildChatResponseFormat(rf *react.ResponseFormat) map[string]any {
+	typ := rf.Type
+	if typ == "" && len(rf.Schema) > 0 {
+		typ = "json_schema"
+	}
+	if typ == "json_schema" && len(rf.Schema) > 0 {
+		name := rf.Name
+		if name == "" {
+			name = "response"
+		}
+		js := map[string]any{
+			"name": name,
+		}
+		if rf.Description != "" {
+			js["description"] = rf.Description
+		}
+		if rf.Strict != nil {
+			js["strict"] = *rf.Strict
+		}
+		var schema map[string]any
+		if json.Unmarshal(rf.Schema, &schema) == nil {
+			if rf.Strict != nil && *rf.Strict {
+				ensureAdditionalPropertiesFalse(schema)
+			}
+			js["schema"] = schema
+		} else {
+			js["schema"] = rf.Schema
+		}
+		return map[string]any{
+			"type":        "json_schema",
+			"json_schema": js,
+		}
+	}
+	if typ == "" {
+		typ = "json_object"
+	}
+	return map[string]any{"type": typ}
+}
+
+func ensureAdditionalPropertiesFalse(m map[string]any) {
+	if m["type"] == "object" {
+		if _, exists := m["additionalProperties"]; !exists {
+			m["additionalProperties"] = false
+		}
+	}
+	if props, ok := m["properties"].(map[string]any); ok {
+		for _, v := range props {
+			if sub, ok := v.(map[string]any); ok {
+				ensureAdditionalPropertiesFalse(sub)
+			}
+		}
+	}
+	if items, ok := m["items"].(map[string]any); ok {
+		ensureAdditionalPropertiesFalse(items)
+	}
 }
 
 func buildChatContent(m react.Message) any {

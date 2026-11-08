@@ -2,6 +2,7 @@ package react
 
 import (
 	"context"
+	"encoding/json"
 	"iter"
 )
 
@@ -50,15 +51,27 @@ func (u *Usage) Add(o Usage) {
 // Total returns input + output tokens.
 func (u Usage) Total() int { return u.InputTokens + u.OutputTokens }
 
+// ResponseFormat constrains a model's output format (e.g. JSON object or strict JSON Schema).
+type ResponseFormat struct {
+	// Type is "json_schema" or "json_object". When Schema is non-empty and Type is "",
+	// "json_schema" is assumed.
+	Type        string          `json:"type,omitempty"`
+	Name        string          `json:"name,omitempty"`
+	Description string          `json:"description,omitempty"`
+	Schema      json.RawMessage `json:"schema,omitempty"`
+	Strict      *bool           `json:"strict,omitempty"`
+}
+
 // Request is a provider-agnostic model request.
 type Request struct {
-	Model       string
-	System      string
-	Messages    []Message
-	Tools       []ToolSpec
-	ToolChoice  string // "", auto, none, required, or a tool name
-	MaxTokens   int
-	Temperature *float64
+	Model          string
+	System         string
+	Messages       []Message
+	Tools          []ToolSpec
+	ToolChoice     string // "", auto, none, required, or a tool name
+	MaxTokens      int
+	Temperature    *float64
+	ResponseFormat *ResponseFormat
 	// Extra is merged into the provider's request body (provider-specific knobs).
 	Extra map[string]any
 }

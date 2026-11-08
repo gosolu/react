@@ -406,3 +406,154 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 		t.Fatalf("expected io.ErrUnexpectedEOF, got %v", errFound)
 	}
 }
+
+func TestAnthropicRedactedThinkingAndUnsignedReasoning(t *testing.T) {
+	var capturedBody map[string]any
+
+	mockClient := &stubClient{
+		postFunc: func(_ context.Context, _ string, _ map[string]string, body io.Reader) (io.ReadCloser, error) {
+			_ = json.NewDecoder(body).Decode(&capturedBody)
+			respJSON := `{
+				"id": "msg_redacted",
+				"type": "message",
+				"role": "assistant",
+				"content": [
+					{"type": "thinking", "thinking": "Step 1. ", "signature": "sig_part1"},
+					{"type": "redacted_thinking", "data": "encrypted_blob_xyz"},
+					{"type": "thinking", "thinking": "Step 2.", "signature": "sig_final"},
+					{"type": "text", "text": "Final answer."}
+				],
+				"stop_reason": "end_turn",
+				"usage": {"input_tokens": 10, "output_tokens": 20}
+			}`
+			return io.NopCloser(strings.NewReader(respJSON)), nil
+		},
+	}
+
+	p := New(provider.Config{
+		APIKey: "ant-key",
+		Client: mockClient,
+	})
+
+	// 1. Send an assistant turn with unsigned reasoning (e.g. from another provider)
+	// and another turn with signed reasoning + redacted_thinking.
+	req := &react.Request{
+		Model: "claude-3-7-sonnet",
+		Messages: []react.Message{
+			react.UserText("q1"),
+			{
+				Role:      react.RoleAssistant,
+				Reasoning: "Unsigned reasoning from DeepSeek",
+				Content:   []react.Part{react.TextPart("a1")},
+			},
+			react.UserText("q2"),
+			{
+				Role:               react.RoleAssistant,
+				Reasoning:          "Signed thought",
+				ReasoningSignature: "sig_valid",
+				RedactedThinking:   []string{"redacted_data_1"},
+				Content:            []react.Part{react.TextPart("a2")},
+			},
+			react.UserText("q3"),
+		},
+		ResponseFormat: &react.ResponseFormat{
+			Type:   "json_schema",
+			Name:   "answer_schema",
+			Schema: json.RawMessage(`{"type":"object","properties":{"ans":{"type":"string"}},"required":["ans"]}`),
+		},
+	}
+
+	resp, err := p.Generate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	// Verify multiple thinking blocks are concatenated and redacted_thinking is preserved
+	if resp.Message.Reasoning != "Step 1. Step 2." {
+		t.Errorf("Reasoning = %q, want 'Step 1. Step 2.'", resp.Message.Reasoning)
+	}
+	if resp.Message.ReasoningSignature != "sig_final" {
+		t.Errorf("ReasoningSignature = %q, want 'sig_final'", resp.Message.ReasoningSignature)
+	}
+	if len(resp.Message.RedactedThinking) != 1 || resp.Message.RedactedThinking[0] != "encrypted_blob_xyz" {
+		t.Errorf("RedactedThinking = %+v, want ['encrypted_blob_xyz']", resp.Message.RedactedThinking)
+	}
+
+	// Verify unsigned thinking block was omitted on first assistant message
+	msgs := capturedBody["messages"].([]any)
+	asst1 := msgs[1].(map[string]any)["content"].([]any)
+	if len(asst1) != 1 || asst1[0].(map[string]any)["type"] != "text" {
+		t.Fatalf("expected unsigned thinking block to be omitted in asst1, got %+v", asst1)
+	}
+
+	// Verify signed thinking + redacted_thinking were sent on second assistant message
+	asst2 := msgs[3].(map[string]any)["content"].([]any)
+	if len(asst2) != 3 {
+		t.Fatalf("expected 3 blocks (thinking, redacted_thinking, text) in asst2, got %+v", asst2)
+	}
+	if asst2[0].(map[string]any)["type"] != "thinking" || asst2[0].(map[string]any)["signature"] != "sig_valid" {
+		t.Errorf("unexpected thinking block: %+v", asst2[0])
+	}
+	if asst2[1].(map[string]any)["type"] != "redacted_thinking" || asst2[1].(map[string]any)["data"] != "redacted_data_1" {
+		t.Errorf("unexpected redacted_thinking block: %+v", asst2[1])
+	}
+
+	// Verify output_config for ResponseFormat
+	outCfg, ok := capturedBody["output_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected output_config in request body, got %+v", capturedBody["output_config"])
+	}
+	fmtMap, ok := outCfg["format"].(map[string]any)
+	if !ok || fmtMap["type"] != "json_schema" {
+		t.Fatalf("expected format.type == json_schema, got %+v", outCfg)
+	}
+	schemaMap := fmtMap["schema"].(map[string]any)
+	if schemaMap["additionalProperties"] != false {
+		t.Errorf("expected additionalProperties: false on schema, got %+v", schemaMap)
+	}
+}
+
+func TestAnthropicStream_RedactedThinking(t *testing.T) {
+	sseData := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","usage":{"input_tokens":10,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"stream_redacted_blob"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hello"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}
+
+event: message_stop
+data: {"type":"message_stop"}
+`
+	p := New(provider.Config{
+		APIKey: "ant-key",
+		Client: &stubClient{
+			streamFunc: func(_ context.Context, _ string, _ map[string]string, _ io.Reader) iter.Seq2[provider.SSEEvent, error] {
+				return provider.ReadSSE(strings.NewReader(sseData))
+			},
+		},
+	})
+
+	var acc react.Accumulator
+	for ev, err := range p.Stream(context.Background(), &react.Request{Model: "claude-3-7-sonnet"}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		acc.Add(ev)
+	}
+
+	resp := acc.Response()
+	if len(resp.Message.RedactedThinking) != 1 || resp.Message.RedactedThinking[0] != "stream_redacted_blob" {
+		t.Fatalf("expected RedactedThinking ['stream_redacted_blob'], got %+v", resp.Message.RedactedThinking)
+	}
+}

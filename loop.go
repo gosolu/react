@@ -256,13 +256,18 @@ func (a *Agent) execute(ctx context.Context, sessionID, input string, rcfg runCo
 			b.WriteString("</system-reminder>")
 			msgs = append(msgs, UserText(b.String()))
 		}
+		respFmt := a.cfg.responseFormat
+		if rcfg.responseFormat != nil {
+			respFmt = rcfg.responseFormat
+		}
 		req := &Request{
-			Model:       model,
-			System:      a.system,
-			Messages:    msgs,
-			Tools:       specs,
-			MaxTokens:   a.cfg.maxTokens,
-			Temperature: a.cfg.temperature,
+			Model:          model,
+			System:         a.system,
+			Messages:       msgs,
+			Tools:          specs,
+			MaxTokens:      a.cfg.maxTokens,
+			Temperature:    a.cfg.temperature,
+			ResponseFormat: respFmt,
 		}
 		// A forced tool choice applies to the first turn only, otherwise the
 		// model could never produce a final answer.
@@ -452,7 +457,9 @@ func (a *Agent) callModel(ctx context.Context, req *Request, stream bool, emit e
 		case StreamTextDelta:
 			ok = emit(Event{Type: EventTextDelta, Text: ev.Text})
 		case StreamReasoningDelta:
-			ok = emit(Event{Type: EventReasoningDelta, Text: ev.Text})
+			if ev.Text != "" {
+				ok = emit(Event{Type: EventReasoningDelta, Text: ev.Text})
+			}
 		case StreamToolCallStart:
 			ok = emit(Event{Type: EventToolCallStart, ToolIndex: ev.Index, ToolCall: &ToolCall{ID: ev.ToolCallID, Name: ev.ToolName, ThoughtSignature: ev.Signature}})
 		case StreamToolCallDelta:

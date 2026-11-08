@@ -31,6 +31,11 @@ func BuildResponsesRequestBody(req *react.Request, stream bool) map[string]any {
 	if req.System != "" {
 		body["instructions"] = req.System
 	}
+	if req.ResponseFormat != nil && body["text"] == nil {
+		body["text"] = map[string]any{
+			"format": buildResponsesTextFormat(req.ResponseFormat),
+		}
+	}
 
 	var input []any
 	for _, m := range req.Messages {
@@ -46,18 +51,13 @@ func BuildResponsesRequestBody(req *react.Request, stream bool) map[string]any {
 				"content": buildResponsesPartsContent(m),
 			})
 		case react.RoleAssistant:
-			if m.Reasoning != "" {
-				input = append(input, map[string]any{
-					"type": "reasoning",
-					"content": []map[string]any{
-						{"type": "reasoning_text", "text": m.Reasoning},
-					},
-				})
-			}
 			if m.Text() != "" || len(m.ToolCalls) == 0 {
 				input = append(input, map[string]any{
-					"role":    "assistant",
-					"content": m.Text(),
+					"type": "message",
+					"role": "assistant",
+					"content": []map[string]any{
+						{"type": "output_text", "text": m.Text()},
+					},
 				})
 			}
 			for _, tc := range m.ToolCalls {
@@ -72,7 +72,7 @@ func BuildResponsesRequestBody(req *react.Request, stream bool) map[string]any {
 			input = append(input, map[string]any{
 				"type":    "function_call_output",
 				"call_id": m.ToolCallID,
-				"output":  buildResponsesPartsContent(m),
+				"output":  buildResponsesToolOutput(m),
 			})
 		}
 	}
@@ -106,6 +106,43 @@ func BuildResponsesRequestBody(req *react.Request, stream bool) map[string]any {
 	return body
 }
 
+func buildResponsesTextFormat(rf *react.ResponseFormat) map[string]any {
+	typ := rf.Type
+	if typ == "" && len(rf.Schema) > 0 {
+		typ = "json_schema"
+	}
+	if typ == "json_schema" && len(rf.Schema) > 0 {
+		name := rf.Name
+		if name == "" {
+			name = "response"
+		}
+		out := map[string]any{
+			"type": "json_schema",
+			"name": name,
+		}
+		if rf.Description != "" {
+			out["description"] = rf.Description
+		}
+		if rf.Strict != nil {
+			out["strict"] = *rf.Strict
+		}
+		var schema map[string]any
+		if json.Unmarshal(rf.Schema, &schema) == nil {
+			if rf.Strict != nil && *rf.Strict {
+				ensureAdditionalPropertiesFalse(schema)
+			}
+			out["schema"] = schema
+		} else {
+			out["schema"] = rf.Schema
+		}
+		return out
+	}
+	if typ == "" {
+		typ = "json_object"
+	}
+	return map[string]any{"type": typ}
+}
+
 func buildResponsesPartsContent(m react.Message) any {
 	if !HasImageParts(m.Content) {
 		return m.Text()
@@ -127,6 +164,32 @@ func buildResponsesPartsContent(m react.Message) any {
 		}
 	}
 	return parts
+}
+
+func buildResponsesToolOutput(m react.Message) string {
+	if !HasImageParts(m.Content) {
+		return m.Text()
+	}
+	var b strings.Builder
+	for _, part := range m.Content {
+		switch part.Type {
+		case react.PartText:
+			if part.Text != "" {
+				if b.Len() > 0 {
+					b.WriteByte('\n')
+				}
+				b.WriteString(part.Text)
+			}
+		case react.PartImage:
+			if url := ResolveImageURL(part); url != "" {
+				if b.Len() > 0 {
+					b.WriteByte('\n')
+				}
+				b.WriteString(url)
+			}
+		}
+	}
+	return b.String()
 }
 
 // ResponsesResponseEnvelope represents the top-level Response object from /responses.

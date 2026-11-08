@@ -324,6 +324,14 @@ func (p *Provider) buildInteractionsRequestBody(req *react.Request, stream bool)
 	if req.Temperature != nil {
 		genConfig["temperature"] = *req.Temperature
 	}
+	if req.ResponseFormat != nil {
+		genConfig["response_mime_type"] = "application/json"
+		if len(req.ResponseFormat.Schema) > 0 {
+			if schema := parseCleanedSchema(req.ResponseFormat.Schema); schema != nil {
+				genConfig["response_schema"] = schema
+			}
+		}
+	}
 	if req.ToolChoice != "" {
 		switch req.ToolChoice {
 		case react.ToolChoiceAuto:

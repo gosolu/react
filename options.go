@@ -1,6 +1,8 @@
 package react
 
 import (
+	"encoding/json"
+	"reflect"
 	"time"
 )
 
@@ -34,6 +36,7 @@ type config struct {
 	strictSkills      bool
 	maxToolOutput     int
 	persistCompaction bool
+	responseFormat    *ResponseFormat
 }
 
 // WithName sets the agent name (shown in events; default "agent").
@@ -152,16 +155,27 @@ func WithMaxToolOutput(bytes int) Option { return func(c *config) { c.maxToolOut
 // WithPersistCompaction enables saving compacted history back to Store when Fit shrinks the history.
 func WithPersistCompaction() Option { return func(c *config) { c.persistCompaction = true } }
 
+// WithResponseFormat sets the default structured output format for the agent.
+func WithResponseFormat(rf ResponseFormat) Option {
+	return func(c *config) { c.responseFormat = &rf }
+}
+
+// WithResponseSchema constrains the agent's default output to the JSON Schema derived from T.
+func WithResponseSchema[T any](name, description string) Option {
+	return WithResponseFormat(schemaResponseFormat[T](name, description))
+}
+
 // RunOption customises a single run.
 type RunOption func(*runConfig)
 
 type runConfig struct {
-	parts      []Part
-	history    []Message
-	model      string
-	toolChoice string
-	tools      []Tool
-	onEvent    func(Event)
+	parts          []Part
+	history        []Message
+	model          string
+	toolChoice     string
+	tools          []Tool
+	onEvent        func(Event)
+	responseFormat *ResponseFormat
 }
 
 // WithInputParts appends extra content (e.g. images) to the user message.
@@ -187,3 +201,39 @@ func WithRunTools(ts ...Tool) RunOption {
 // WithEventHandler observes events during Run (non-stream mode). Calls are
 // serialized. It is also honoured by Stream, in addition to the iterator.
 func WithEventHandler(fn func(Event)) RunOption { return func(r *runConfig) { r.onEvent = fn } }
+
+// WithRunResponseFormat overrides the structured output format for this run.
+func WithRunResponseFormat(rf ResponseFormat) RunOption {
+	return func(r *runConfig) { r.responseFormat = &rf }
+}
+
+// WithRunResponseSchema constrains this run's final output to the JSON Schema derived from T.
+func WithRunResponseSchema[T any](name, description string) RunOption {
+	return WithRunResponseFormat(schemaResponseFormat[T](name, description))
+}
+
+// WithJSONObject constrains this run's final output to a valid JSON object.
+func WithJSONObject() RunOption {
+	return WithRunResponseFormat(ResponseFormat{Type: "json_object"})
+}
+
+func schemaResponseFormat[T any](name, description string) ResponseFormat {
+	if name == "" {
+		t := reflect.TypeFor[T]()
+		for t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+		name = t.Name()
+		if name == "" {
+			name = "response"
+		}
+	}
+	strict := true
+	return ResponseFormat{
+		Type:        "json_schema",
+		Name:        name,
+		Description: description,
+		Schema:       append(json.RawMessage(nil), SchemaFor[T]()...),
+		Strict:      &strict,
+	}
+}
